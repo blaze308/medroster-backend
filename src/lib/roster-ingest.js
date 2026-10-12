@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { parseDocxRoster } from './docx-roster.js';
 import { parseXlsxRoster } from './xlsx-roster.js';
 import { extractRosterWithOpenAI, interpretRosterGrid, refineExtractWithOpenAI, stripInventedPii } from './roster-extract.js';
+import { logInfo, logError } from './logger.js';
 
 function extOf(fileName) {
     const m = String(fileName || '').toLowerCase().match(/\.([a-z0-9]+)$/);
@@ -41,8 +42,16 @@ async function resolveZipKind(buffer, guessed) {
 }
 
 export async function extractRosterPreview({ buffer, fileName }) {
+    const t0 = Date.now();
     let kind = sniffRosterKind(buffer, fileName);
     if (kind === 'zip') kind = await resolveZipKind(buffer, kind);
+
+    logInfo('ROSTER_EXTRACT', 'Preview start', {
+        fileName: fileName || '',
+        kind,
+        bytes: buffer?.length || 0,
+    });
+    console.log(`[ROSTER_EXTRACT] start kind=${kind} file=${fileName || ''} bytes=${buffer?.length || 0}`);
 
     if (kind === 'xls') {
         throw new Error('Save the workbook as .xlsx (Excel Workbook) and upload again');
@@ -51,18 +60,49 @@ export async function extractRosterPreview({ buffer, fileName }) {
         throw new Error('Save as .docx, or upload a PDF or photo of the roster');
     }
 
-    if (kind === 'docx' || kind === 'xlsx') {
-        const parsed = kind === 'docx' ? await parseDocxRoster(buffer) : await parseXlsxRoster(buffer);
-        if (!parsed.rows?.length) throw new Error('No staff rows found in that roster');
-        const interpreted = interpretRosterGrid(parsed);
-        const refined = await refineExtractWithOpenAI(parsed, interpreted);
-        return stripInventedPii(refined);
-    }
+    try {
+        if (kind === 'docx' || kind === 'xlsx') {
+            const parseT0 = Date.now();
+            const parsed = kind === 'docx' ? await parseDocxRoster(buffer) : await parseXlsxRoster(buffer);
+            logInfo('ROSTER_EXTRACT', 'Local parse done', {
+                kind,
+                durationMs: Date.now() - parseT0,
+                rows: parsed?.rows?.length || 0,
+                days: parsed?.days?.length || 0,
+                title: parsed?.title || '',
+            });
+            console.log(`[ROSTER_EXTRACT] local parse ${kind} in ${Date.now() - parseT0}ms rows=${parsed?.rows?.length || 0}`);
+            if (!parsed.rows?.length) throw new Error('No staff rows found in that roster');
+            const interpreted = interpretRosterGrid(parsed);
+            const refined = await refineExtractWithOpenAI(parsed, interpreted);
+            const out = stripInventedPii(refined);
+            logInfo('ROSTER_EXTRACT', 'Preview done (grid+AI refine)', {
+                kind,
+                durationMs: Date.now() - t0,
+                staff: out?.staff?.length || 0,
+                days: out?.days?.length || 0,
+            });
+            console.log(`[ROSTER_EXTRACT] done in ${Date.now() - t0}ms staff=${out?.staff?.length || 0}`);
+            return out;
+        }
 
-    if (kind === 'pdf' || kind === 'png' || kind === 'jpeg' || kind === 'webp') {
-        const preview = await extractRosterWithOpenAI({ kind, buffer, fileName });
-        if (!preview.staff?.length) throw new Error('No staff rows found in that roster');
-        return stripInventedPii(preview);
+        if (kind === 'pdf' || kind === 'png' || kind === 'jpeg' || kind === 'webp') {
+            const preview = await extractRosterWithOpenAI({ kind, buffer, fileName });
+            if (!preview.staff?.length) throw new Error('No staff rows found in that roster');
+            const out = stripInventedPii(preview);
+            logInfo('ROSTER_EXTRACT', 'Preview done (vision/PDF)', {
+                kind,
+                durationMs: Date.now() - t0,
+                staff: out?.staff?.length || 0,
+                days: out?.days?.length || 0,
+            });
+            console.log(`[ROSTER_EXTRACT] done in ${Date.now() - t0}ms staff=${out?.staff?.length || 0}`);
+            return out;
+        }
+    } catch (err) {
+        logError('ROSTER_EXTRACT', `Preview failed after ${Date.now() - t0}ms`, err);
+        console.error(`[ROSTER_EXTRACT] failed after ${Date.now() - t0}ms`, err.message);
+        throw err;
     }
 
     throw new Error('Upload a Word, Excel, PDF, or photo of the duty roster');

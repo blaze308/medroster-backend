@@ -1,4 +1,25 @@
 import { expandRank, splitFullName } from './rank-abbr.js';
+import { logInfo, logError } from './logger.js';
+
+function summarizeOpenAiPayload(data) {
+    if (!data || typeof data !== 'object') return {};
+    const usage = data.usage || data.usage_metadata || null;
+    const id = data.id || null;
+    const model = data.model || null;
+    const status = data.status || null;
+    const outputPreview = outputTextFromResponse(data);
+    return {
+        id,
+        model,
+        status,
+        usage,
+        outputChars: outputPreview ? outputPreview.length : 0,
+        outputPreview: outputPreview ? outputPreview.slice(0, 800) : '',
+        toolCalls: Array.isArray(data.output)
+            ? data.output.filter((o) => o?.type === 'web_search_call' || o?.type === 'function_call').length
+            : 0,
+    };
+}
 
 const SHIFT_ALIASES = {
     M: 'Morning',
@@ -273,7 +294,30 @@ function outputTextFromResponse(data) {
     return typeof legacy === 'string' ? legacy : '';
 }
 
-async function openaiResponses({ key, input, schema, schemaName, timeoutMs = 90000 }) {
+async function openaiResponses({ key, input, schema, schemaName, timeoutMs = 90000, logCtx = {} }) {
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const t0 = Date.now();
+    const inputSummary = Array.isArray(input)
+        ? input.map((msg) => ({
+            role: msg.role,
+            contentTypes: Array.isArray(msg.content)
+                ? msg.content.map((c) => c?.type || typeof c)
+                : typeof msg.content,
+            textChars: Array.isArray(msg.content)
+                ? msg.content.reduce((n, c) => n + String(c?.text || '').length, 0)
+                : String(msg.content || '').length,
+        }))
+        : { type: typeof input };
+    logInfo('OPENAI', 'Responses API request start', {
+        endpoint: '/v1/responses',
+        model,
+        schemaName,
+        timeoutMs,
+        inputSummary,
+        ...logCtx,
+    });
+    console.log(`[OPENAI] → responses ${schemaName} model=${model} timeout=${timeoutMs}ms`, logCtx);
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -284,7 +328,7 @@ async function openaiResponses({ key, input, schema, schemaName, timeoutMs = 900
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+                model,
                 temperature: 0,
                 tools: [{ type: 'web_search' }],
                 max_tool_calls: 3,
@@ -300,8 +344,17 @@ async function openaiResponses({ key, input, schema, schemaName, timeoutMs = 900
             }),
             signal: controller.signal,
         });
+        const durationMs = Date.now() - t0;
         if (!res.ok) {
             const errText = await res.text().catch(() => '');
+            logError('OPENAI', `Responses API failed ${res.status}`, {
+                message: errText.slice(0, 500),
+                status: res.status,
+                durationMs,
+                schemaName,
+                ...logCtx,
+            });
+            console.error(`[OPENAI] ← responses FAIL ${res.status} in ${durationMs}ms`, errText.slice(0, 300));
             const err = new Error(`OpenAI ${res.status}: ${errText.slice(0, 500)}`);
             err.status = res.status;
             err.body = errText;
@@ -309,14 +362,47 @@ async function openaiResponses({ key, input, schema, schemaName, timeoutMs = 900
         }
         const data = await res.json();
         const content = outputTextFromResponse(data);
+        const summary = summarizeOpenAiPayload(data);
+        logInfo('OPENAI', 'Responses API success', {
+            durationMs,
+            schemaName,
+            httpStatus: res.status,
+            ...summary,
+            ...logCtx,
+        });
+        console.log(`[OPENAI] ← responses OK in ${durationMs}ms`, {
+            id: summary.id,
+            usage: summary.usage,
+            outputChars: summary.outputChars,
+            toolCalls: summary.toolCalls,
+        });
         if (!content) throw new Error('OpenAI returned no text');
         return JSON.parse(content);
+    } catch (err) {
+        if (err?.name === 'AbortError') {
+            const durationMs = Date.now() - t0;
+            logError('OPENAI', 'Responses API aborted (timeout)', { durationMs, schemaName, timeoutMs, ...logCtx });
+            console.error(`[OPENAI] ← responses TIMEOUT after ${durationMs}ms`);
+        }
+        throw err;
     } finally {
         clearTimeout(timer);
     }
 }
 
-async function openaiChatFallback({ key, messages, schema, schemaName, timeoutMs = 90000 }) {
+async function openaiChatFallback({ key, messages, schema, schemaName, timeoutMs = 90000, logCtx = {} }) {
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const t0 = Date.now();
+    logInfo('OPENAI', 'Chat completions fallback start', {
+        endpoint: '/v1/chat/completions',
+        model,
+        schemaName,
+        timeoutMs,
+        messageCount: Array.isArray(messages) ? messages.length : 0,
+        ...logCtx,
+    });
+    console.log(`[OPENAI] → chat/completions ${schemaName} model=${model}`, logCtx);
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -327,7 +413,7 @@ async function openaiChatFallback({ key, messages, schema, schemaName, timeoutMs
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+                model,
                 temperature: 0,
                 response_format: {
                     type: 'json_schema',
@@ -337,14 +423,41 @@ async function openaiChatFallback({ key, messages, schema, schemaName, timeoutMs
             }),
             signal: controller.signal,
         });
+        const durationMs = Date.now() - t0;
         if (!res.ok) {
             const errText = await res.text().catch(() => '');
+            logError('OPENAI', `Chat API failed ${res.status}`, {
+                message: errText.slice(0, 400),
+                status: res.status,
+                durationMs,
+                schemaName,
+                ...logCtx,
+            });
+            console.error(`[OPENAI] ← chat FAIL ${res.status} in ${durationMs}ms`, errText.slice(0, 300));
             throw new Error(`OpenAI chat ${res.status}: ${errText.slice(0, 400)}`);
         }
         const data = await res.json();
         const content = data.choices?.[0]?.message?.content;
+        logInfo('OPENAI', 'Chat completions success', {
+            durationMs,
+            schemaName,
+            httpStatus: res.status,
+            model: data.model,
+            usage: data.usage || null,
+            outputChars: content ? content.length : 0,
+            outputPreview: content ? String(content).slice(0, 800) : '',
+            ...logCtx,
+        });
+        console.log(`[OPENAI] ← chat OK in ${durationMs}ms`, { usage: data.usage, outputChars: content?.length });
         if (!content) throw new Error('OpenAI returned no text');
         return JSON.parse(content);
+    } catch (err) {
+        if (err?.name === 'AbortError') {
+            const durationMs = Date.now() - t0;
+            logError('OPENAI', 'Chat API aborted (timeout)', { durationMs, schemaName, timeoutMs, ...logCtx });
+            console.error(`[OPENAI] ← chat TIMEOUT after ${durationMs}ms`);
+        }
+        throw err;
     } finally {
         clearTimeout(timer);
     }
@@ -352,8 +465,22 @@ async function openaiChatFallback({ key, messages, schema, schemaName, timeoutMs
 
 export async function refineExtractWithOpenAI(parsed, interpreted) {
     const key = process.env.OPENAI_API_KEY;
-    if (!key) return interpreted;
+    if (!key) {
+        logInfo('OPENAI', 'Refine skipped — OPENAI_API_KEY not set');
+        return interpreted;
+    }
     const prompt = buildPrompt(parsed, interpreted);
+    const logCtx = {
+        stage: 'refine',
+        title: parsed?.title || '',
+        rowCount: parsed?.rows?.length || 0,
+        dayCount: parsed?.days?.length || 0,
+        promptChars: prompt.length,
+        promptPreview: prompt.slice(0, 600),
+    };
+    logInfo('OPENAI', 'Refine extract start', logCtx);
+    console.log('[OPENAI] refine start', { rows: logCtx.rowCount, days: logCtx.dayCount, promptChars: logCtx.promptChars });
+    const t0 = Date.now();
     try {
         let parsedAi;
         try {
@@ -361,26 +488,37 @@ export async function refineExtractWithOpenAI(parsed, interpreted) {
                 key,
                 schema: EXTRACT_SCHEMA,
                 schemaName: 'roster_extract',
+                logCtx,
                 input: [
                     { role: 'system', content: 'You convert duty-roster grids into structured staff and shift cells. No IDs.' },
                     { role: 'user', content: prompt },
                 ],
             });
         } catch (err) {
-            console.warn('OpenAI responses refine failed, using chat', err.message);
+            console.warn('[OPENAI] responses refine failed, using chat', err.message);
+            logInfo('OPENAI', 'Refine falling back to chat', { error: err.message, ...logCtx });
             parsedAi = await openaiChatFallback({
                 key,
                 schema: EXTRACT_SCHEMA,
                 schemaName: 'roster_extract',
+                logCtx: { ...logCtx, fallback: true },
                 messages: [
                     { role: 'system', content: 'You convert duty-roster grids into structured staff and shift cells. No IDs.' },
                     { role: 'user', content: prompt },
                 ],
             });
         }
-        return mergeAiExtract(interpreted, parsedAi);
+        const merged = mergeAiExtract(interpreted, parsedAi);
+        logInfo('OPENAI', 'Refine extract done', {
+            durationMs: Date.now() - t0,
+            staffOut: merged?.staff?.length || 0,
+            ...logCtx,
+        });
+        console.log(`[OPENAI] refine done in ${Date.now() - t0}ms staff=${merged?.staff?.length || 0}`);
+        return merged;
     } catch (err) {
-        console.warn('OpenAI extract skipped', err.message);
+        logError('OPENAI', 'Refine extract skipped', err);
+        console.warn('[OPENAI] refine skipped', err.message);
         return interpreted;
     }
 }
@@ -394,6 +532,14 @@ function mimeForKind(kind) {
 }
 
 async function uploadOpenAiFile(key, buffer, fileName, mime) {
+    const t0 = Date.now();
+    logInfo('OPENAI', 'File upload start', {
+        endpoint: '/v1/files',
+        fileName,
+        mime,
+        bytes: buffer?.length || 0,
+    });
+    console.log(`[OPENAI] → files upload ${fileName} ${mime} ${buffer?.length || 0}B`);
     const form = new FormData();
     form.append('purpose', 'user_data');
     form.append('file', new Blob([buffer], { type: mime }), fileName || 'roster.bin');
@@ -402,11 +548,29 @@ async function uploadOpenAiFile(key, buffer, fileName, mime) {
         headers: { Authorization: `Bearer ${key}` },
         body: form,
     });
+    const durationMs = Date.now() - t0;
     if (!res.ok) {
         const errText = await res.text().catch(() => '');
+        logError('OPENAI', `File upload failed ${res.status}`, {
+            message: errText.slice(0, 300),
+            status: res.status,
+            durationMs,
+            fileName,
+            mime,
+        });
+        console.error(`[OPENAI] ← files FAIL ${res.status} in ${durationMs}ms`);
         throw new Error(`OpenAI file upload ${res.status}: ${errText.slice(0, 300)}`);
     }
-    return res.json();
+    const json = await res.json();
+    logInfo('OPENAI', 'File upload success', {
+        durationMs,
+        fileId: json.id,
+        bytes: json.bytes,
+        purpose: json.purpose,
+        fileName,
+    });
+    console.log(`[OPENAI] ← files OK in ${durationMs}ms id=${json.id}`);
+    return json;
 }
 
 export async function extractRosterWithOpenAI({ kind, buffer, fileName }) {
@@ -415,6 +579,16 @@ export async function extractRosterWithOpenAI({ kind, buffer, fileName }) {
         throw new Error('AI extract is not configured. Set OPENAI_API_KEY to read PDFs and photos.');
     }
     const mime = mimeForKind(kind);
+    const logCtx = {
+        stage: 'vision_extract',
+        kind,
+        fileName: fileName || '',
+        bytes: buffer?.length || 0,
+        mime,
+    };
+    logInfo('OPENAI', 'Vision/PDF extract start', logCtx);
+    console.log('[OPENAI] vision extract start', logCtx);
+    const t0 = Date.now();
     const instruction = `Extract every staff row and each day's shift from this Ghana hospital duty roster (${fileName || kind}).
 ${ghanaLegendPrompt()}
 Return JSON only. year must be a 4-digit number. days[].date is YYYY-MM-DD.`;
@@ -423,6 +597,7 @@ Return JSON only. year must be a 4-digit number. days[].date is YYYY-MM-DD.`;
     if (kind === 'pdf') {
         const uploaded = await uploadOpenAiFile(key, buffer, fileName || 'roster.pdf', mime);
         userContent.push({ type: 'input_file', file_id: uploaded.id });
+        logCtx.fileId = uploaded.id;
     } else {
         userContent.push({
             type: 'input_image',
@@ -437,19 +612,22 @@ Return JSON only. year must be a 4-digit number. days[].date is YYYY-MM-DD.`;
             schema: FULL_EXTRACT_SCHEMA,
             schemaName: 'roster_vision_extract',
             timeoutMs: 120000,
+            logCtx,
             input: [
                 { role: 'system', content: [{ type: 'input_text', text: 'You extract Ghana duty rosters. No IDs.' }] },
                 { role: 'user', content: userContent },
             ],
         });
     } catch (err) {
-        console.warn('OpenAI vision responses failed, trying chat image', err.message);
+        console.warn('[OPENAI] vision responses failed, trying chat image', err.message);
+        logInfo('OPENAI', 'Vision falling back to chat', { error: err.message, ...logCtx });
         if (kind === 'pdf') throw new Error('Could not read that PDF. Photograph the roster page and upload the image, or save as Word/Excel.');
         parsedAi = await openaiChatFallback({
             key,
             schema: FULL_EXTRACT_SCHEMA,
             schemaName: 'roster_vision_extract',
             timeoutMs: 120000,
+            logCtx: { ...logCtx, fallback: true },
             messages: [
                 { role: 'system', content: 'You extract Ghana duty rosters. No IDs.' },
                 {
@@ -462,6 +640,14 @@ Return JSON only. year must be a 4-digit number. days[].date is YYYY-MM-DD.`;
             ],
         });
     }
+    logInfo('OPENAI', 'Vision/PDF raw extract received', {
+        durationMs: Date.now() - t0,
+        staffCount: parsedAi?.staff?.length || 0,
+        dayCount: parsedAi?.days?.length || 0,
+        title: parsedAi?.title || '',
+        ...logCtx,
+    });
+    console.log(`[OPENAI] vision raw done in ${Date.now() - t0}ms staff=${parsedAi?.staff?.length || 0}`);
 
     const days = (parsedAi.days || []).map((d) => ({
         date: d.date,

@@ -236,13 +236,18 @@ router.post('/parse-csv', requireAuth, requireHospital, requireWriteAccess, asyn
 
 // POST /hospitals/:id/staff/extract — roster preview (docx/xlsx/pdf/image), does not write
 router.post('/extract', requireAuth, requireHospital, requireWriteAccess, async (req, res) => {
+    const t0 = Date.now();
+    const fileName = req.body.fileName || '';
     try {
         const buf = decodeUploadedFile(req.body);
+        console.log(`[STAFF_API] POST extract start file=${fileName} bodyBytes≈${buf?.length || 0}`);
         if (!buf || buf.length < 32) return res.status(400).json({ error: 'Upload a duty roster file' });
-        const preview = await extractRosterPreview({ buffer: buf, fileName: req.body.fileName || '' });
+        const preview = await extractRosterPreview({ buffer: buf, fileName });
         if (!preview.staff?.length) return res.status(400).json({ error: 'No staff rows found in that roster' });
+        console.log(`[STAFF_API] POST extract OK in ${Date.now() - t0}ms staff=${preview.staff.length}`);
         return res.json(preview);
     } catch (err) {
+        console.error(`[STAFF_API] POST extract FAIL in ${Date.now() - t0}ms`, err.message);
         logError('STAFF_API', 'Roster extract failed', err);
         return res.status(400).json({ error: err.message || 'Could not read that roster' });
     }

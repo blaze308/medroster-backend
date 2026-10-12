@@ -3,6 +3,7 @@ import { db } from '../config/firebase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ACCOUNT_TYPES, getTierLimits, scheduleDayCount } from '../lib/tier-limits.js';
 import { buildStaffCsvTemplate, mapCsvRowToStaff, parseCsv } from '../lib/staff-csv.js';
+import { extractRosterPreview } from '../lib/roster-ingest.js';
 import { logDataModification, logError } from '../lib/logger.js';
 
 const router = Router({ mergeParams: true });
@@ -139,12 +140,48 @@ router.delete('/schedules/:schedId', requireAuth, async (req, res) => {
     }
 });
 
+function decodeUploadedFile(body) {
+    const raw = body.fileBase64 || body.csvText;
+    if (!raw) return null;
+    const b64 = String(raw).includes(',') ? String(raw).split(',').pop() : String(raw);
+    try {
+        return Buffer.from(b64, body.csvText && !body.fileBase64 ? 'utf8' : 'base64');
+    } catch {
+        return null;
+    }
+}
+
 // GET /api/me/staff/template — CSV template
 router.get('/staff/template', requireAuth, (_req, res) => {
     const csv = buildStaffCsvTemplate();
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="medroster-staff-template.csv"');
     return res.send(csv);
+});
+
+// POST /api/me/staff/extract — roster preview (docx/xlsx/pdf/image); client merges into schedule
+router.post('/staff/extract', requireAuth, async (req, res) => {
+    const t0 = Date.now();
+    const fileName = req.body.fileName || '';
+    try {
+        if (!assertIndividual(req, res)) return;
+        const limits = getTierLimits(req.user.accountType || ACCOUNT_TYPES.INDIVIDUAL);
+        if (!limits.allowDataExtraction) {
+            return res.status(403).json({ error: 'Roster extract is not available on this plan' });
+        }
+        const buf = decodeUploadedFile(req.body);
+        console.log(`[INDIVIDUAL_API] POST extract start file=${fileName} bodyBytes≈${buf?.length || 0}`);
+        if (!buf || buf.length < 32) return res.status(400).json({ error: 'Upload a duty roster file' });
+        const preview = await extractRosterPreview({ buffer: buf, fileName });
+        if (!preview.staff?.length) return res.status(400).json({ error: 'No staff rows found in that roster' });
+        const staff = (preview.staff || []).slice(0, limits.maxStaff);
+        console.log(`[INDIVIDUAL_API] POST extract OK in ${Date.now() - t0}ms staff=${staff.length}`);
+        return res.json({ ...preview, staff, source: preview.source || 'roster' });
+    } catch (err) {
+        console.error(`[INDIVIDUAL_API] POST extract FAIL in ${Date.now() - t0}ms`, err.message);
+        logError('INDIVIDUAL_API', 'Roster extract failed', err);
+        return res.status(400).json({ error: err.message || 'Could not read that roster' });
+    }
 });
 
 // POST /api/me/staff/import — parse CSV into staff objects (caller merges into schedule)

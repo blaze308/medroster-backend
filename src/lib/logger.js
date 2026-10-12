@@ -33,7 +33,15 @@ export const logAutoGeneration = (schedId, staffCount, assignmentCount, duration
 
 export const logError = (category, message, err) => {
     console.error(`[${category}] ${message}`, err?.code || '', err?.message || err);
-    write('error', category, message, { error: err?.message, code: err?.code, stack: err?.stack });
+    if (err instanceof Error || err?.stack) {
+        write('error', category, message, { error: err?.message, code: err?.code, stack: err?.stack, status: err?.status });
+        return;
+    }
+    if (err && typeof err === 'object') {
+        write('error', category, message, err);
+        return;
+    }
+    write('error', category, message, { error: String(err ?? '') });
 };
 
 export const logInfo = (category, message, meta = {}) =>

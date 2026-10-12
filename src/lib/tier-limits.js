@@ -13,7 +13,7 @@ export const TIER_LIMITS = {
         maxSchedules: 1,
         maxPdfExports: 5,
         allowAutoGenerate: true,
-        allowDataExtraction: false,
+        allowDataExtraction: true,
         allowDepartments: false,
     },
     individual: {
