@@ -2,11 +2,11 @@
 
 /** All MedRoster cell meanings — keep in sync with applyRosterSetup / codeLetter. */
 export const LEGEND_MEANING_OPTIONS = [
-    { value: 'Morning', label: 'Morning', hint: 'Ward cover · M, D', group: 'On duty' },
-    { value: 'Afternoon', label: 'Afternoon', hint: 'Ward cover · A, E', group: 'On duty' },
-    { value: 'Night', label: 'Night', hint: 'Ward cover · N, XN, N12', group: 'On duty' },
+    { value: 'Morning', label: 'Morning', hint: 'Ward cover · M, XM (General X-ray)', group: 'On duty' },
+    { value: 'Afternoon', label: 'Afternoon', hint: 'Ward cover · A, XA (General X-ray)', group: 'On duty' },
+    { value: 'Night', label: 'Night', hint: 'Ward cover · N, XN (General X-ray)', group: 'On duty' },
     { value: 'SOD', label: 'SOD', hint: 'Supervisor on Duty', group: 'On duty' },
-    { value: 'Office', label: 'Office', hint: 'Clinic / office days · 8–2 · P, XM, XA', group: 'On duty' },
+    { value: 'Office', label: 'Clinic / OPD', hint: 'Polyclinic / clinic days · 8–2 · P', group: 'On duty' },
     { value: 'Off', label: 'Off', hint: 'O, D/O, OFF', group: 'Not on duty' },
     { value: 'Holiday', label: 'Holiday', hint: 'H, H/O, PH', group: 'Not on duty' },
     { value: 'Leave', label: 'Leave', hint: 'L, LV, annual / maternity', group: 'Not on duty' },
@@ -67,6 +67,26 @@ export function weekdayKeyFromDate(date) {
     return keys[new Date(date).getDay()] || '';
 }
 
+/** Kind-first chooser for unclear legend codes. */
+export const LEGEND_KIND_OPTIONS = [
+    { value: 'clinic', label: 'Clinic / OPD', hint: 'Day clinic hours · no typical take-ups' },
+    { value: 'ward', label: 'Ward shift', hint: 'Morning / Afternoon / Night cover' },
+    { value: 'off', label: 'Off / leave', hint: 'Not on duty that day' },
+    { value: 'skip', label: 'Skip', hint: 'Ignore this code' },
+];
+
+export function kindFromMeaning(meaning) {
+    if (meaning === 'Office') return 'clinic';
+    if (['Morning', 'Afternoon', 'Night', 'SOD'].includes(meaning)) return 'ward';
+    if (['Off', 'Holiday', 'Leave'].includes(meaning)) return 'off';
+    return '';
+}
+
+export function displayMeaningLabel(meaning) {
+    if (!meaning) return '';
+    return LEGEND_MEANING_OPTIONS.find((o) => o.value === meaning)?.label || meaning;
+}
+
 const KNOWN_LABEL_MEANING = {
     M: 'Morning',
     A: 'Afternoon',
@@ -78,9 +98,9 @@ const KNOWN_LABEL_MEANING = {
     SOD: 'SOD',
     OFC: 'Office',
     OFFICE: 'Office',
-    XM: '', // often clinic/office session — soft-suggest Office
-    XA: '', // often clinic/office session — soft-suggest Office
-    XN: 'Night',
+    XM: 'Morning', // General X-ray · Morning
+    XA: 'Afternoon', // General X-ray · Afternoon
+    XN: 'Night', // General X-ray · Night
     PM: 'Morning',
     PA: 'Afternoon',
     PN: 'Night',
@@ -88,16 +108,33 @@ const KNOWN_LABEL_MEANING = {
     P: '', // Polyclinic / office hours — soft-suggest Office
 };
 
+function normalizeLabel(raw) {
+    return String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+/** Radiology-style compound codes: unit + shift. */
+export function codePlainHint(label) {
+    const u = normalizeLabel(label);
+    if (u === 'P' || u === 'OFC' || u === 'OFFICE') return 'Polyclinic X-ray · Clinic / OPD (8–2)';
+    if (u === 'XM') return 'General X-ray · Morning';
+    if (u === 'XA') return 'General X-ray · Afternoon';
+    if (u === 'XN') return 'General X-ray · Night';
+    if (u === 'PM') return 'Polyclinic · Morning';
+    if (u === 'PA') return 'Polyclinic · Afternoon';
+    if (u === 'PN') return 'Polyclinic · Night';
+    if (u === 'M') return 'Morning (ward cover)';
+    if (u === 'A') return 'Afternoon (ward cover)';
+    if (u === 'N') return 'Night (ward cover)';
+    return '';
+}
+
 function looksLikeOfficeCode(label, unit) {
     const u = String(unit || '');
     if (label === 'P' || label === 'OFC' || label === 'OFFICE') return true;
-    if (label === 'XM' || label === 'XA') return true;
-    if (/polyclinic|clinic|office|antenatal/i.test(u)) return true;
+    // XM/XA/XN are General X-ray shifts — not Office
+    if (/polyclinic|antenatal/i.test(u) && !/^X[MAN]$/i.test(label)) return true;
+    if (/office hours|office duty/i.test(u)) return true;
     return false;
-}
-
-function normalizeLabel(raw) {
-    return String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
 }
 
 function codeLetter(meaning) {
@@ -169,13 +206,11 @@ export function buildSetupProposal(preview, savedSetup = null) {
                 if (!unit) unit = meaning;
                 meaning = KNOWN_LABEL_MEANING[label] || '';
             }
-            // Clinic / office-hours codes — soft-suggest Office (morning-like clinic days)
-            if (!saved && looksLikeOfficeCode(label, unit) && (!meaning || meaning === 'Morning' || meaning === 'Afternoon')) {
+            // P / Polyclinic → Office (clinic hours). XM/XA/XN stay General X-ray shifts.
+            if (!saved && looksLikeOfficeCode(label, unit) && (!meaning || !LEGEND_MEANINGS.includes(meaning))) {
                 meaning = 'Office';
             }
-            if (!meaning && looksLikeOfficeCode(label, unit)) {
-                meaning = 'Office';
-            }
+            if (!unit) unit = unitFromLabel(label) || '';
             const dutyOverlaps = ON_DUTY_MEANINGS.includes(meaning)
                 ? normalizeDutyOverlaps(saved?.dutyOverlaps, meaning)
                 : [];
@@ -184,13 +219,18 @@ export function buildSetupProposal(preview, savedSetup = null) {
                 : [];
             const outsideMorning = meaning === 'Office' ? Boolean(saved?.outsideMorning) : false;
             const confidence = confidenceFor(label, meaning, Boolean(saved));
+            const compoundUnitCode = ['P', 'XM', 'XA', 'XN', 'PM', 'PA', 'PN'].includes(label);
+            // First time: confirm compound codes so unit + shift is clear in the modal
             const needsConfirm = confidence !== 'high' || !meaning
-                || (!saved && meaning === 'Office' && looksLikeOfficeCode(label, unit));
+                || (!saved && (looksLikeOfficeCode(label, unit) || compoundUnitCode));
             return {
                 label,
                 count,
                 meaning: meaning || '',
                 unit,
+                codeHint: codePlainHint(label),
+                legendNote: saved?.legendNote || '',
+                dutyKind: kindFromMeaning(meaning) || (saved?.dutyKind || ''),
                 dutyOverlaps,
                 officeDays,
                 outsideMorning,
@@ -204,6 +244,9 @@ export function buildSetupProposal(preview, savedSetup = null) {
         label: c.label,
         meaning: c.meaning,
         unit: c.unit,
+        codeHint: c.codeHint || codePlainHint(c.label),
+        legendNote: c.legendNote || '',
+        dutyKind: c.dutyKind || kindFromMeaning(c.meaning),
         dutyOverlaps: c.dutyOverlaps,
         officeDays: c.officeDays,
         outsideMorning: c.outsideMorning,
@@ -346,6 +389,8 @@ export function applyRosterSetup(preview, setup = {}) {
                 label: e.label,
                 meaning,
                 unit: e.unit || '',
+                legendNote: String(e.legendNote || '').trim(),
+                dutyKind: e.dutyKind || kindFromMeaning(meaning),
                 dutyOverlaps: ON_DUTY_MEANINGS.includes(meaning)
                     ? normalizeDutyOverlaps(e.dutyOverlaps, meaning)
                     : [],
@@ -365,6 +410,8 @@ export function buildRosterSetupPayload(setup) {
                 label: String(e.label || '').trim(),
                 meaning,
                 unit: String(e.unit || '').trim(),
+                legendNote: String(e.legendNote || '').trim(),
+                dutyKind: String(e.dutyKind || kindFromMeaning(meaning) || '').trim(),
                 dutyOverlaps: ON_DUTY_MEANINGS.includes(meaning)
                     ? normalizeDutyOverlaps(e.dutyOverlaps, meaning)
                     : [],

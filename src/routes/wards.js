@@ -137,6 +137,8 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
                             label: String(e.label || e.code || '').trim(),
                             meaning,
                             unit: String(e.unit || '').trim(),
+                            legendNote: String(e.legendNote || '').trim().slice(0, 200),
+                            dutyKind: String(e.dutyKind || '').trim(),
                             dutyOverlaps,
                             officeDays,
                             outsideMorning: meaning === 'Office' ? Boolean(e.outsideMorning) : false,
