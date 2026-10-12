@@ -121,11 +121,15 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
                         let dutyOverlaps = Array.isArray(e.dutyOverlaps)
                             ? e.dutyOverlaps.map((v) => String(v || '').trim()).filter((v) => allowedCover.includes(v))
                             : [];
-                        // Fixed cover buckets by meaning
+                        // Fixed cover for ward meanings; Clinic/OPD may add Afternoon/Night (rare)
                         if (meaning === 'Afternoon') dutyOverlaps = ['Afternoon'];
                         else if (meaning === 'Night') dutyOverlaps = ['Night'];
-                        else if (['Morning', 'SOD', 'Office'].includes(meaning)) dutyOverlaps = ['Morning'];
-                        else dutyOverlaps = [];
+                        else if (meaning === 'Morning' || meaning === 'SOD') dutyOverlaps = ['Morning'];
+                        else if (meaning === 'Office') {
+                            if (!dutyOverlaps.includes('Morning')) dutyOverlaps = ['Morning', ...dutyOverlaps];
+                            dutyOverlaps = allowedCover.filter((s) => dutyOverlaps.includes(s));
+                            if (!dutyOverlaps.length) dutyOverlaps = ['Morning'];
+                        } else dutyOverlaps = [];
                         let officeDays = Array.isArray(e.officeDays)
                             ? e.officeDays.map((v) => String(v || '').trim()).filter((v) => dayKeys.includes(v))
                             : [];
@@ -133,6 +137,10 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
                             officeDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
                         }
                         if (meaning !== 'Office') officeDays = [];
+                        const outsideMorning = meaning === 'Office'
+                            && (Boolean(e.outsideMorning)
+                                || dutyOverlaps.includes('Afternoon')
+                                || dutyOverlaps.includes('Night'));
                         return {
                             label: String(e.label || e.code || '').trim(),
                             meaning,
@@ -141,7 +149,7 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
                             dutyKind: String(e.dutyKind || '').trim(),
                             dutyOverlaps,
                             officeDays,
-                            outsideMorning: meaning === 'Office' ? Boolean(e.outsideMorning) : false,
+                            outsideMorning,
                         };
                     }).filter((e) => e.label)
                     : [],

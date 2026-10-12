@@ -198,6 +198,10 @@ export function validateWorkRestriction(staff, date, shiftType, schedule) {
 function isOfficeStyleAssignment(assignment) {
     const name = shiftName(assignment?.shiftType);
     if (name !== 'Office') return false;
+    const overlaps = assignment?.dutyOverlaps || assignment?.shiftType?.dutyOverlaps;
+    const list = Array.isArray(overlaps) ? overlaps : [];
+    if (list.includes('Afternoon') || list.includes('Night')) return false;
+    if (list.length >= 3) return false;
     const outside = assignment?.outsideMorning || assignment?.shiftType?.outsideMorning;
     return !outside;
 }

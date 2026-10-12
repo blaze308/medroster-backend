@@ -31,17 +31,29 @@ export const OFFICE_DAY_OPTIONS = [
 export const OFFICE_DAY_KEYS = OFFICE_DAY_OPTIONS.map((o) => o.value);
 export const DEFAULT_OFFICE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
-/** Internal cover bucket for each meaning (M/A/N fixed; Office → Morning-like). */
+/** Internal cover bucket for each meaning (M/A/N fixed; Clinic/OPD defaults Morning-only). */
 export function defaultDutyOverlaps(meaning) {
     if (!ON_DUTY_MEANINGS.includes(meaning)) return [];
     if (meaning === 'Afternoon') return ['Afternoon'];
     if (meaning === 'Night') return ['Night'];
-    // Morning, SOD, Office → morning-like cover bucket (Office still separate / no take-ups)
+    // Morning, SOD, Office → morning-like (Clinic rare option may add Afternoon/Night)
     return ['Morning'];
 }
 
-export function normalizeDutyOverlaps(_raw, meaning) {
+export function normalizeDutyOverlaps(raw, meaning) {
+    if (meaning === 'Office') {
+        let list = Array.isArray(raw) ? raw.map((v) => String(v || '').trim()) : [];
+        list = list.filter((v) => COVER_SHIFTS.includes(v));
+        if (!list.includes('Morning')) list = ['Morning', ...list];
+        return COVER_SHIFTS.filter((s) => list.includes(s));
+    }
     return defaultDutyOverlaps(meaning);
+}
+
+/** All three cover shifts tagged → treat Clinic/OPD like a regular cover shift. */
+export function isRegularDutyOverlaps(overlaps) {
+    const set = new Set(overlaps || []);
+    return COVER_SHIFTS.every((s) => set.has(s));
 }
 
 export function defaultOfficeDays(meaning) {
@@ -57,9 +69,16 @@ export function normalizeOfficeDays(raw, meaning) {
     return OFFICE_DAY_KEYS.filter((d) => list.includes(d));
 }
 
-/** Office is clinic-style (no take-ups) unless rare outsideMorning flag. */
-export function isOfficeStyleEntry(meaning, outsideMorning = false) {
-    return meaning === 'Office' && !outsideMorning;
+/**
+ * Clinic/OPD is clinic-style (no take-ups) when only Morning is included.
+ * Adding Afternoon/Night (rare) widens cover; all three → regular shift.
+ */
+export function isOfficeStyleEntry(meaning, outsideMorning = false, overlaps = null) {
+    if (meaning !== 'Office') return false;
+    const list = normalizeDutyOverlaps(overlaps, meaning);
+    if (isRegularDutyOverlaps(list)) return false;
+    if (outsideMorning || list.includes('Afternoon') || list.includes('Night')) return false;
+    return list.length === 1 && list[0] === 'Morning';
 }
 
 export function weekdayKeyFromDate(date) {
@@ -147,6 +166,38 @@ function codeLetter(meaning) {
     if (meaning === 'Office') return 'OFC';
     if (meaning === 'Leave') return 'LV';
     return '';
+}
+
+/** Generic MedRoster fallback letters — prefer ward file codes when present. */
+const GENERIC_SOURCE_CODES = new Set(['M', 'A', 'N', 'O', 'H', 'SOD', 'OFC', 'LV', 'OFFICE']);
+
+/**
+ * Prefer the ward's own legend label for a meaning (e.g. P over OFC, XM over M).
+ */
+export function preferredSourceCode(meaning, legend = []) {
+    const entries = (legend || []).filter(
+        (e) => e && e.meaning === meaning && String(e.label || e.code || '').trim()
+    );
+    if (!entries.length) return codeLetter(meaning);
+    const custom = entries.find(
+        (e) => !GENERIC_SOURCE_CODES.has(normalizeLabel(e.label || e.code))
+    );
+    return String((custom || entries[0]).label || (custom || entries[0]).code).trim();
+}
+
+/** Human-readable legend line using ward lingo + unit / note. */
+export function formatLegendMeaning(entry) {
+    if (!entry) return '';
+    const meaning = entry.meaning || '';
+    const meaningLabel = meaning === 'Office' ? 'Clinic / OPD' : meaning;
+    const unit = String(entry.unit || '').trim();
+    const note = String(entry.legendNote || '').trim();
+    const bits = [meaningLabel];
+    if (unit) bits.push(unit);
+    if (meaning === 'Office') bits.push('weekday clinic / outpatient hours');
+    let text = bits.filter(Boolean).join(' — ');
+    if (note) text = `${text} (${note})`;
+    return text;
 }
 
 function unitFromLabel(label) {
@@ -338,15 +389,24 @@ export function applyRosterSetup(preview, setup = {}) {
                 ? normalizeOfficeDays(entry?.officeDays, meaning)
                 : [];
             const outsideMorning = meaning === 'Office' ? Boolean(entry?.outsideMorning) : false;
-            const code = onLeave && !meaning ? 'LV' : codeLetter(meaning) || (meaning ? '' : (cell.code || ''));
-            const sod = meaning === 'SOD' || Boolean(cell.sod);
+            // Keep the file's own code (XM, P, …) — only fall back to MedRoster letters.
+            const sourceLabel = label || normalizeLabel(cell.code) || '';
+            let resolvedMeaning = meaning;
+            let code = sourceLabel || codeLetter(meaning) || String(cell.code || '').trim();
+            if (onLeave && (!meaning || meaning === 'Leave')) {
+                resolvedMeaning = 'Leave';
+                code = sourceLabel || 'LV';
+            } else if (!code && meaning) {
+                code = codeLetter(meaning);
+            }
+            const sod = resolvedMeaning === 'SOD' || Boolean(cell.sod);
             const next = {
                 date: cell.date,
-                text: cell.text,
-                code: onLeave && (!meaning || meaning === 'Leave') ? 'LV' : code,
+                text: cell.text || sourceLabel || code,
+                code,
                 sod,
                 unit,
-                meaning: onLeave && (!meaning || meaning === 'Leave') ? 'Leave' : meaning,
+                meaning: resolvedMeaning,
                 dutyOverlaps,
                 officeDays,
                 outsideMorning,
@@ -356,6 +416,8 @@ export function applyRosterSetup(preview, setup = {}) {
                 assignments.push({
                     date: cell.date,
                     code: next.code,
+                    meaning: next.meaning,
+                    unit: next.unit,
                     sod: next.sod,
                     dutyOverlaps: next.dutyOverlaps,
                     officeDays: next.officeDays,
