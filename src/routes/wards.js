@@ -92,7 +92,7 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
         const snap = await ref.get();
         if (!snap.exists) return res.status(404).json({ error: 'Ward not found' });
 
-        const allowed = ['name', 'description', 'isActive', 'guidelines'];
+        const allowed = ['name', 'description', 'isActive', 'guidelines', 'rosterSetup'];
         const update = { updatedAt: new Date().toISOString() };
         for (const key of allowed) {
             if (req.body[key] !== undefined) update[key] = req.body[key];
@@ -108,6 +108,23 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
                 ),
                 expectInCharge: g.expectInCharge !== undefined ? Boolean(g.expectInCharge) : (prev.expectInCharge !== false),
                 notes: String(g.notes ?? prev.notes ?? '').trim(),
+            };
+        }
+        if (update.rosterSetup && typeof update.rosterSetup === 'object') {
+            const rs = update.rosterSetup;
+            update.rosterSetup = {
+                legend: Array.isArray(rs.legend)
+                    ? rs.legend.map((e) => ({
+                        label: String(e.label || e.code || '').trim(),
+                        meaning: String(e.meaning || '').trim(),
+                        unit: String(e.unit || '').trim(),
+                    })).filter((e) => e.label)
+                    : [],
+                inchargeStaffKey: String(rs.inchargeStaffKey || '').trim(),
+                assistantStaffKey: String(rs.assistantStaffKey || '').trim(),
+                units: rs.units && typeof rs.units === 'object' ? rs.units : {},
+                leaveByKey: rs.leaveByKey && typeof rs.leaveByKey === 'object' ? rs.leaveByKey : {},
+                confirmedAt: String(rs.confirmedAt || new Date().toISOString()),
             };
         }
 

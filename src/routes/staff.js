@@ -6,6 +6,7 @@ import { classifyStaffType, compareStaffName } from '../lib/staff-utils.js';
 import { buildStaffCsvTemplate, mapCsvRowToStaff, parseCsv } from '../lib/staff-csv.js';
 import { categoryFromRank, expandRank, splitFullName } from '../lib/rank-abbr.js';
 import { extractRosterPreview } from '../lib/roster-ingest.js';
+import { applyRosterSetup, buildSetupProposal } from '../lib/roster-setup.js';
 import { getTierLimits } from '../lib/tier-limits.js';
 import { logDataModification, logError } from '../lib/logger.js';
 
@@ -239,17 +240,48 @@ router.post('/extract', requireAuth, requireHospital, requireWriteAccess, async 
     const t0 = Date.now();
     const fileName = req.body.fileName || '';
     try {
+        const { id: hospitalId } = req.params;
         const buf = decodeUploadedFile(req.body);
         console.log(`[STAFF_API] POST extract start file=${fileName} bodyBytes≈${buf?.length || 0}`);
         if (!buf || buf.length < 32) return res.status(400).json({ error: 'Upload a duty roster file' });
         const preview = await extractRosterPreview({ buffer: buf, fileName });
         if (!preview.staff?.length) return res.status(400).json({ error: 'No staff rows found in that roster' });
-        console.log(`[STAFF_API] POST extract OK in ${Date.now() - t0}ms staff=${preview.staff.length}`);
-        return res.json(preview);
+
+        let savedSetup = null;
+        const wardId = String(req.body.wardId || '').trim();
+        if (wardId) {
+            const wardSnap = await db.doc(`hospitals/${hospitalId}/wards/${wardId}`).get();
+            if (wardSnap.exists) savedSetup = wardSnap.data()?.rosterSetup || null;
+        }
+        const proposal = buildSetupProposal(preview, savedSetup);
+        console.log(`[STAFF_API] POST extract OK in ${Date.now() - t0}ms staff=${preview.staff.length} codes=${proposal.codes.length}`);
+        return res.json({
+            ...preview,
+            codes: proposal.codes,
+            legendDraft: proposal.legendDraft,
+            roleGuesses: proposal.roleGuesses,
+            blanks: proposal.blanks,
+            needsFullSetup: proposal.needsFullSetup,
+            savedSetup: proposal.savedSetup,
+            source: preview.source || 'roster',
+        });
     } catch (err) {
         console.error(`[STAFF_API] POST extract FAIL in ${Date.now() - t0}ms`, err.message);
         logError('STAFF_API', 'Roster extract failed', err);
         return res.status(400).json({ error: err.message || 'Could not read that roster' });
+    }
+});
+
+// POST /hospitals/:id/staff/remap-roster — apply confirmed legend/roles; no OpenAI
+router.post('/remap-roster', requireAuth, requireHospital, requireWriteAccess, async (req, res) => {
+    try {
+        const { preview, setup } = req.body || {};
+        if (!preview?.staff?.length) return res.status(400).json({ error: 'preview.staff is required' });
+        const remapped = applyRosterSetup(preview, setup || {});
+        return res.json(remapped);
+    } catch (err) {
+        logError('STAFF_API', 'Roster remap failed', err);
+        return res.status(400).json({ error: err.message || 'Could not remap that roster' });
     }
 });
 

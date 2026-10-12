@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { parseDocxRoster } from './docx-roster.js';
 import { parseXlsxRoster } from './xlsx-roster.js';
 import { extractRosterWithOpenAI, interpretRosterGrid, refineExtractWithOpenAI, stripInventedPii } from './roster-extract.js';
+import { buildSetupProposal } from './roster-setup.js';
 import { logInfo, logError } from './logger.js';
 
 function extOf(fileName) {
@@ -74,13 +75,26 @@ export async function extractRosterPreview({ buffer, fileName }) {
             console.log(`[ROSTER_EXTRACT] local parse ${kind} in ${Date.now() - parseT0}ms rows=${parsed?.rows?.length || 0}`);
             if (!parsed.rows?.length) throw new Error('No staff rows found in that roster');
             const interpreted = interpretRosterGrid(parsed);
-            const refined = await refineExtractWithOpenAI(parsed, interpreted);
-            const out = stripInventedPii(refined);
+            // Local-first: only call OpenAI refine when codes/meaning look uncertain
+            const proposalProbe = buildSetupProposal(interpreted, null);
+            const needsRefine = proposalProbe.codes.some(
+                (c) => c.confidence === 'low' || !c.meaning
+            ) || !(interpreted.staff || []).every((s) => s.firstName || s.lastName);
+            const refined = needsRefine
+                ? await refineExtractWithOpenAI(parsed, interpreted)
+                : { ...interpreted, aiUsed: false };
+            if (!needsRefine) {
+                logInfo('ROSTER_EXTRACT', 'Skipped AI refine — high-confidence local parse', {
+                    codes: proposalProbe.codes.length,
+                });
+            }
+            const out = withSetupProposal(stripInventedPii(refined));
             logInfo('ROSTER_EXTRACT', 'Preview done (grid+AI refine)', {
                 kind,
                 durationMs: Date.now() - t0,
                 staff: out?.staff?.length || 0,
                 days: out?.days?.length || 0,
+                codes: out?.codes?.length || 0,
             });
             console.log(`[ROSTER_EXTRACT] done in ${Date.now() - t0}ms staff=${out?.staff?.length || 0}`);
             return out;
@@ -89,12 +103,13 @@ export async function extractRosterPreview({ buffer, fileName }) {
         if (kind === 'pdf' || kind === 'png' || kind === 'jpeg' || kind === 'webp') {
             const preview = await extractRosterWithOpenAI({ kind, buffer, fileName });
             if (!preview.staff?.length) throw new Error('No staff rows found in that roster');
-            const out = stripInventedPii(preview);
+            const out = withSetupProposal(stripInventedPii(preview));
             logInfo('ROSTER_EXTRACT', 'Preview done (vision/PDF)', {
                 kind,
                 durationMs: Date.now() - t0,
                 staff: out?.staff?.length || 0,
                 days: out?.days?.length || 0,
+                codes: out?.codes?.length || 0,
             });
             console.log(`[ROSTER_EXTRACT] done in ${Date.now() - t0}ms staff=${out?.staff?.length || 0}`);
             return out;
@@ -106,4 +121,16 @@ export async function extractRosterPreview({ buffer, fileName }) {
     }
 
     throw new Error('Upload a Word, Excel, PDF, or photo of the duty roster');
+}
+
+function withSetupProposal(preview) {
+    const proposal = buildSetupProposal(preview, null);
+    return {
+        ...preview,
+        codes: proposal.codes,
+        legendDraft: proposal.legendDraft,
+        roleGuesses: proposal.roleGuesses,
+        blanks: proposal.blanks,
+        needsFullSetup: proposal.needsFullSetup,
+    };
 }
