@@ -191,10 +191,33 @@ export function validateWorkRestriction(staff, date, shiftType, schedule) {
 
 /**
  * Ghana guideline: prefer ≥N senior / in-charge on Morning, Afternoon, Night.
- * SOD counts toward day-side (Morning + Afternoon). Office counts with Morning.
+ * dutyOverlaps: Office+Morning-only = no take-ups; all three = regular cover.
  * Always soft — never blocks.
  * Returns { warnings: [{ shift, message, missingCount }] }.
  */
+function resolveDutyOverlaps(assignment) {
+    const raw = assignment?.dutyOverlaps || assignment?.shiftType?.dutyOverlaps;
+    if (Array.isArray(raw) && raw.length) {
+        return raw.filter((s) => ['Morning', 'Afternoon', 'Night'].includes(s));
+    }
+    const name = shiftName(assignment?.shiftType);
+    if (name === 'Office' || name === 'Morning' || name === 'SOD') return ['Morning'];
+    if (name === 'Afternoon') return ['Afternoon'];
+    if (name === 'Night') return ['Night'];
+    return name ? [name] : [];
+}
+
+function isOfficeStyleAssignment(assignment) {
+    const name = shiftName(assignment?.shiftType);
+    const overlaps = resolveDutyOverlaps(assignment);
+    return name === 'Office' && overlaps.length === 1 && overlaps[0] === 'Morning';
+}
+
+function isRegularOverlaps(overlaps) {
+    const set = new Set(overlaps || []);
+    return ['Morning', 'Afternoon', 'Night'].every((s) => set.has(s));
+}
+
 export function validateSupervisoryCoverage({ date, assignments, staffById, settings }) {
     const minSenior = minSeniorPerShift(settings);
     const warnings = [];
@@ -207,10 +230,18 @@ export function validateSupervisoryCoverage({ date, assignments, staffById, sett
     for (const shift of coverageShifts) {
         const onShift = dayAssignments.filter((a) => {
             const name = shiftName(a.shiftType);
-            if (name === shift) return true;
-            // SOD covers day-side supervisory presence
-            if ((shift === 'Morning' || shift === 'Afternoon') && name === 'SOD') return true;
-            if (shift === 'Morning' && name === 'Office') return true;
+            if (isOfficeStyleAssignment(a)) return false;
+            const overlaps = resolveDutyOverlaps(a);
+            if (isRegularOverlaps(overlaps)) {
+                if (name === shift) return true;
+                if ((shift === 'Morning' || shift === 'Afternoon') && name === 'SOD') return true;
+                if (name === 'Office' && shift === 'Morning') return true;
+                return false;
+            }
+            if (overlaps.includes(shift)) return true;
+            if ((shift === 'Morning' || shift === 'Afternoon') && name === 'SOD' && overlaps.includes('Morning')) {
+                return true;
+            }
             return false;
         });
 

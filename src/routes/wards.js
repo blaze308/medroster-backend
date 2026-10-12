@@ -114,11 +114,26 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
             const rs = update.rosterSetup;
             update.rosterSetup = {
                 legend: Array.isArray(rs.legend)
-                    ? rs.legend.map((e) => ({
-                        label: String(e.label || e.code || '').trim(),
-                        meaning: String(e.meaning || '').trim(),
-                        unit: String(e.unit || '').trim(),
-                    })).filter((e) => e.label)
+                    ? rs.legend.map((e) => {
+                        const meaning = String(e.meaning || '').trim();
+                        const allowed = ['Morning', 'Afternoon', 'Night'];
+                        let dutyOverlaps = Array.isArray(e.dutyOverlaps)
+                            ? e.dutyOverlaps.map((v) => String(v || '').trim()).filter((v) => allowed.includes(v))
+                            : [];
+                        // Migrate legacy dutyMode if overlaps missing
+                        if (!dutyOverlaps.length && e.dutyMode) {
+                            const mode = String(e.dutyMode || '').trim();
+                            if (mode === 'standard') dutyOverlaps = [...allowed];
+                            else if (mode === 'office' || mode === 'morningLike') dutyOverlaps = ['Morning'];
+                        }
+                        dutyOverlaps = allowed.filter((s) => dutyOverlaps.includes(s));
+                        return {
+                            label: String(e.label || e.code || '').trim(),
+                            meaning,
+                            unit: String(e.unit || '').trim(),
+                            dutyOverlaps,
+                        };
+                    }).filter((e) => e.label)
                     : [],
                 inchargeStaffKey: String(rs.inchargeStaffKey || '').trim(),
                 assistantStaffKey: String(rs.assistantStaffKey || '').trim(),

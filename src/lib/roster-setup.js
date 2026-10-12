@@ -6,13 +6,65 @@ export const LEGEND_MEANING_OPTIONS = [
     { value: 'Afternoon', label: 'Afternoon', hint: 'A, XA, E', group: 'On duty' },
     { value: 'Night', label: 'Night', hint: 'N, XN, N12', group: 'On duty' },
     { value: 'SOD', label: 'SOD', hint: 'Supervisor on Duty', group: 'On duty' },
-    { value: 'Office', label: 'Office', hint: '08:00–14:00 (6h) · P / Polyclinic / office hours', group: 'On duty' },
+    { value: 'Office', label: 'Office', hint: 'Weekdays 08:00–14:00 · P / Polyclinic', group: 'On duty' },
     { value: 'Off', label: 'Off', hint: 'O, D/O, OFF', group: 'Not on duty' },
     { value: 'Holiday', label: 'Holiday', hint: 'H, H/O, PH', group: 'Not on duty' },
     { value: 'Leave', label: 'Leave', hint: 'L, LV, annual / maternity', group: 'Not on duty' },
 ];
 
 export const LEGEND_MEANINGS = LEGEND_MEANING_OPTIONS.map((o) => o.value);
+
+/** Cover shifts a duty can overlap / hand off to. */
+export const DUTY_OVERLAP_OPTIONS = [
+    { value: 'Morning', label: 'Morning', hint: 'Day session · Office 8–2 typically sits here' },
+    { value: 'Afternoon', label: 'Afternoon', hint: 'Take-up after the morning session' },
+    { value: 'Night', label: 'Night', hint: 'Evening / night take-up' },
+];
+
+export const DUTY_OVERLAP_SHIFTS = DUTY_OVERLAP_OPTIONS.map((o) => o.value);
+export const ON_DUTY_MEANINGS = ['Morning', 'Afternoon', 'Night', 'SOD', 'Office'];
+
+/** Office-style: Morning only — daily 8–2, overlaps Morning but separate, no take-ups. */
+export function defaultDutyOverlaps(meaning) {
+    if (!ON_DUTY_MEANINGS.includes(meaning)) return [];
+    if (meaning === 'Office' || meaning === 'Morning' || meaning === 'SOD') return ['Morning'];
+    if (meaning === 'Afternoon') return ['Afternoon'];
+    if (meaning === 'Night') return ['Night'];
+    return ['Morning'];
+}
+
+/** Migrate legacy dutyMode → overlaps. */
+function overlapsFromLegacyMode(dutyMode, meaning) {
+    if (dutyMode === 'standard') return [...DUTY_OVERLAP_SHIFTS];
+    if (dutyMode === 'office' || dutyMode === 'morningLike') return ['Morning'];
+    return defaultDutyOverlaps(meaning);
+}
+
+export function normalizeDutyOverlaps(raw, meaning, legacyMode = '') {
+    if (!ON_DUTY_MEANINGS.includes(meaning)) return [];
+    let list = Array.isArray(raw) ? raw.map((v) => String(v || '').trim()) : [];
+    list = list.filter((v) => DUTY_OVERLAP_SHIFTS.includes(v));
+    if (!list.length && legacyMode) list = overlapsFromLegacyMode(legacyMode, meaning);
+    if (!list.length) list = defaultDutyOverlaps(meaning);
+    // Stable order: Morning → Afternoon → Night
+    return DUTY_OVERLAP_SHIFTS.filter((s) => list.includes(s));
+}
+
+/** Tagged every cover shift → treat as a regular cover shift. */
+export function isRegularDutyOverlaps(overlaps) {
+    const set = new Set(overlaps || []);
+    return DUTY_OVERLAP_SHIFTS.every((s) => set.has(s));
+}
+
+/**
+ * Office-style post: Morning-only overlaps (8–2, separate from Morning, no take-ups).
+ * Expanding overlaps means hand-off / take-up after the session.
+ */
+export function isOfficeStyleOverlaps(meaning, overlaps) {
+    if (isRegularDutyOverlaps(overlaps)) return false;
+    const list = overlaps || [];
+    return meaning === 'Office' && list.length === 1 && list[0] === 'Morning';
+}
 
 const KNOWN_LABEL_MEANING = {
     M: 'Morning',
@@ -112,6 +164,9 @@ export function buildSetupProposal(preview, savedSetup = null) {
             if (!meaning && unit && (/polyclinic/i.test(unit) || label === 'P')) {
                 meaning = 'Office';
             }
+            const dutyOverlaps = ON_DUTY_MEANINGS.includes(meaning)
+                ? normalizeDutyOverlaps(saved?.dutyOverlaps, meaning, saved?.dutyMode)
+                : [];
             const confidence = confidenceFor(label, meaning, Boolean(saved));
             // Always confirm when we only guessed from a unit / office tag
             const needsConfirm = confidence !== 'high' || !meaning
@@ -121,6 +176,7 @@ export function buildSetupProposal(preview, savedSetup = null) {
                 count,
                 meaning: meaning || '',
                 unit,
+                dutyOverlaps,
                 confidence,
                 needsConfirm,
                 fromSaved: Boolean(saved),
@@ -131,6 +187,7 @@ export function buildSetupProposal(preview, savedSetup = null) {
         label: c.label,
         meaning: c.meaning,
         unit: c.unit,
+        dutyOverlaps: c.dutyOverlaps,
         confidence: c.confidence,
         needsConfirm: c.needsConfirm,
     }));
@@ -212,6 +269,9 @@ export function applyRosterSetup(preview, setup = {}) {
             const entry = byLabel.get(label);
             const meaning = entry?.meaning || KNOWN_LABEL_MEANING[label] || '';
             const unit = entry?.unit || cell.unit || unitFromLabel(label) || '';
+            const dutyOverlaps = ON_DUTY_MEANINGS.includes(meaning)
+                ? normalizeDutyOverlaps(entry?.dutyOverlaps, meaning, entry?.dutyMode)
+                : [];
             const code = onLeave && !meaning ? 'LV' : codeLetter(meaning) || (meaning ? '' : (cell.code || ''));
             const sod = meaning === 'SOD' || Boolean(cell.sod);
             const next = {
@@ -221,13 +281,15 @@ export function applyRosterSetup(preview, setup = {}) {
                 sod,
                 unit,
                 meaning: onLeave && (!meaning || meaning === 'Leave') ? 'Leave' : meaning,
+                dutyOverlaps,
             };
             cells.push(next);
-            if (['Morning', 'Afternoon', 'Night', 'SOD', 'Office'].includes(next.meaning)) {
+            if (ON_DUTY_MEANINGS.includes(next.meaning)) {
                 assignments.push({
                     date: cell.date,
                     code: next.code,
                     sod: next.sod,
+                    dutyOverlaps: next.dutyOverlaps,
                 });
             }
         }
@@ -255,6 +317,9 @@ export function applyRosterSetup(preview, setup = {}) {
             label: e.label,
             meaning: e.meaning,
             unit: e.unit || '',
+            dutyOverlaps: ON_DUTY_MEANINGS.includes(e.meaning)
+                ? normalizeDutyOverlaps(e.dutyOverlaps, e.meaning, e.dutyMode)
+                : [],
         })),
         setupApplied: true,
     };
@@ -262,11 +327,17 @@ export function applyRosterSetup(preview, setup = {}) {
 
 export function buildRosterSetupPayload(setup) {
     return {
-        legend: (setup.legend || []).map((e) => ({
-            label: String(e.label || '').trim(),
-            meaning: String(e.meaning || '').trim(),
-            unit: String(e.unit || '').trim(),
-        })),
+        legend: (setup.legend || []).map((e) => {
+            const meaning = String(e.meaning || '').trim();
+            return {
+                label: String(e.label || '').trim(),
+                meaning,
+                unit: String(e.unit || '').trim(),
+                dutyOverlaps: ON_DUTY_MEANINGS.includes(meaning)
+                    ? normalizeDutyOverlaps(e.dutyOverlaps, meaning, e.dutyMode)
+                    : [],
+            };
+        }),
         inchargeStaffKey: setup.inchargeStaffKey || '',
         assistantStaffKey: setup.assistantStaffKey || '',
         units: setup.units || {},
