@@ -55,8 +55,8 @@ const SHIFT_ALIASES = {
     SL: 'Leave',
     L: 'Leave',
     PTO: 'Leave',
-    XM: 'Morning',
-    XA: 'Afternoon',
+    XM: 'Office', // clinic / unit session (morning-like) — confirm in ward setup
+    XA: 'Office',
     XN: 'Night',
     PM: 'Morning',
     PA: 'Afternoon',
@@ -210,7 +210,7 @@ function ghanaLegendPrompt() {
 - DAY SUP is morning + supervisor
 - Leave spelled across cells (MATERNITY LEAVE, PART LEAVE, STUDY LEAVE) is a leave note, not M/A/N
 - Aliases: D/O N/O H/O = off/holiday; E = afternoon; Day (not D/O) = morning
-- Radiology (Cape Coast and similar): M/A/N are shifts. X means General X-ray (unit prefix). P means Polyclinic / office hours (NOT afternoon) — map as Office (OFC, ~08:00–14:00) with unit Polyclinic X-ray. XM/XA/XN = ward shift at General X-ray. L = leave. O = off.
+- Radiology (Cape Coast and similar): M/A/N are fixed ward cover shifts. P = Polyclinic / office clinic hours → Office (OFC, ~08:00–14:00, selected weekdays, no take-ups) with unit Polyclinic X-ray. XM/XA often = clinic/office sessions at a unit (also Office, morning-like) — not Afternoon cover. XN = Night at General X-ray. L = leave. O = off.
 - Expand GHS rank codes (SSM=Senior Staff Midwife, AMPS, SMO, MO, SM, SSN, RM, PMO, PNO, SNO, NO, DCNO, DNMS)
 - Never output Ghana Card, staff ID, or license numbers
 - Title-case names; first token is firstName, remainder lastName

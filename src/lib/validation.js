@@ -191,31 +191,15 @@ export function validateWorkRestriction(staff, date, shiftType, schedule) {
 
 /**
  * Ghana guideline: prefer ≥N senior / in-charge on Morning, Afternoon, Night.
- * dutyOverlaps: Office+Morning-only = no take-ups; all three = regular cover.
+ * Office clinic posts are morning-like but separate (no take-ups) unless outsideMorning.
  * Always soft — never blocks.
  * Returns { warnings: [{ shift, message, missingCount }] }.
  */
-function resolveDutyOverlaps(assignment) {
-    const raw = assignment?.dutyOverlaps || assignment?.shiftType?.dutyOverlaps;
-    if (Array.isArray(raw) && raw.length) {
-        return raw.filter((s) => ['Morning', 'Afternoon', 'Night'].includes(s));
-    }
-    const name = shiftName(assignment?.shiftType);
-    if (name === 'Office' || name === 'Morning' || name === 'SOD') return ['Morning'];
-    if (name === 'Afternoon') return ['Afternoon'];
-    if (name === 'Night') return ['Night'];
-    return name ? [name] : [];
-}
-
 function isOfficeStyleAssignment(assignment) {
     const name = shiftName(assignment?.shiftType);
-    const overlaps = resolveDutyOverlaps(assignment);
-    return name === 'Office' && overlaps.length === 1 && overlaps[0] === 'Morning';
-}
-
-function isRegularOverlaps(overlaps) {
-    const set = new Set(overlaps || []);
-    return ['Morning', 'Afternoon', 'Night'].every((s) => set.has(s));
+    if (name !== 'Office') return false;
+    const outside = assignment?.outsideMorning || assignment?.shiftType?.outsideMorning;
+    return !outside;
 }
 
 export function validateSupervisoryCoverage({ date, assignments, staffById, settings }) {
@@ -231,17 +215,9 @@ export function validateSupervisoryCoverage({ date, assignments, staffById, sett
         const onShift = dayAssignments.filter((a) => {
             const name = shiftName(a.shiftType);
             if (isOfficeStyleAssignment(a)) return false;
-            const overlaps = resolveDutyOverlaps(a);
-            if (isRegularOverlaps(overlaps)) {
-                if (name === shift) return true;
-                if ((shift === 'Morning' || shift === 'Afternoon') && name === 'SOD') return true;
-                if (name === 'Office' && shift === 'Morning') return true;
-                return false;
-            }
-            if (overlaps.includes(shift)) return true;
-            if ((shift === 'Morning' || shift === 'Afternoon') && name === 'SOD' && overlaps.includes('Morning')) {
-                return true;
-            }
+            if (name === shift) return true;
+            if ((shift === 'Morning' || shift === 'Afternoon') && name === 'SOD') return true;
+            if (name === 'Office' && shift === 'Morning') return true;
             return false;
         });
 

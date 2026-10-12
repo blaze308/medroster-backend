@@ -116,22 +116,30 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
                 legend: Array.isArray(rs.legend)
                     ? rs.legend.map((e) => {
                         const meaning = String(e.meaning || '').trim();
-                        const allowed = ['Morning', 'Afternoon', 'Night'];
+                        const allowedCover = ['Morning', 'Afternoon', 'Night'];
+                        const dayKeys = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
                         let dutyOverlaps = Array.isArray(e.dutyOverlaps)
-                            ? e.dutyOverlaps.map((v) => String(v || '').trim()).filter((v) => allowed.includes(v))
+                            ? e.dutyOverlaps.map((v) => String(v || '').trim()).filter((v) => allowedCover.includes(v))
                             : [];
-                        // Migrate legacy dutyMode if overlaps missing
-                        if (!dutyOverlaps.length && e.dutyMode) {
-                            const mode = String(e.dutyMode || '').trim();
-                            if (mode === 'standard') dutyOverlaps = [...allowed];
-                            else if (mode === 'office' || mode === 'morningLike') dutyOverlaps = ['Morning'];
+                        // Fixed cover buckets by meaning
+                        if (meaning === 'Afternoon') dutyOverlaps = ['Afternoon'];
+                        else if (meaning === 'Night') dutyOverlaps = ['Night'];
+                        else if (['Morning', 'SOD', 'Office'].includes(meaning)) dutyOverlaps = ['Morning'];
+                        else dutyOverlaps = [];
+                        let officeDays = Array.isArray(e.officeDays)
+                            ? e.officeDays.map((v) => String(v || '').trim()).filter((v) => dayKeys.includes(v))
+                            : [];
+                        if (meaning === 'Office' && !officeDays.length) {
+                            officeDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
                         }
-                        dutyOverlaps = allowed.filter((s) => dutyOverlaps.includes(s));
+                        if (meaning !== 'Office') officeDays = [];
                         return {
                             label: String(e.label || e.code || '').trim(),
                             meaning,
                             unit: String(e.unit || '').trim(),
                             dutyOverlaps,
+                            officeDays,
+                            outsideMorning: meaning === 'Office' ? Boolean(e.outsideMorning) : false,
                         };
                     }).filter((e) => e.label)
                     : [],

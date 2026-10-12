@@ -2,11 +2,11 @@
 
 /** All MedRoster cell meanings — keep in sync with applyRosterSetup / codeLetter. */
 export const LEGEND_MEANING_OPTIONS = [
-    { value: 'Morning', label: 'Morning', hint: 'Day shift · M, XM, D', group: 'On duty' },
-    { value: 'Afternoon', label: 'Afternoon', hint: 'A, XA, E', group: 'On duty' },
-    { value: 'Night', label: 'Night', hint: 'N, XN, N12', group: 'On duty' },
+    { value: 'Morning', label: 'Morning', hint: 'Ward cover · M, D', group: 'On duty' },
+    { value: 'Afternoon', label: 'Afternoon', hint: 'Ward cover · A, E', group: 'On duty' },
+    { value: 'Night', label: 'Night', hint: 'Ward cover · N, XN, N12', group: 'On duty' },
     { value: 'SOD', label: 'SOD', hint: 'Supervisor on Duty', group: 'On duty' },
-    { value: 'Office', label: 'Office', hint: 'Weekdays 08:00–14:00 · P / Polyclinic', group: 'On duty' },
+    { value: 'Office', label: 'Office', hint: 'Clinic / office days · 8–2 · P, XM, XA', group: 'On duty' },
     { value: 'Off', label: 'Off', hint: 'O, D/O, OFF', group: 'Not on duty' },
     { value: 'Holiday', label: 'Holiday', hint: 'H, H/O, PH', group: 'Not on duty' },
     { value: 'Leave', label: 'Leave', hint: 'L, LV, annual / maternity', group: 'Not on duty' },
@@ -14,56 +14,57 @@ export const LEGEND_MEANING_OPTIONS = [
 
 export const LEGEND_MEANINGS = LEGEND_MEANING_OPTIONS.map((o) => o.value);
 
-/** Cover shifts a duty can overlap / hand off to. */
-export const DUTY_OVERLAP_OPTIONS = [
-    { value: 'Morning', label: 'Morning', hint: 'Day session · Office 8–2 typically sits here' },
-    { value: 'Afternoon', label: 'Afternoon', hint: 'Take-up after the morning session' },
-    { value: 'Night', label: 'Night', hint: 'Evening / night take-up' },
-];
-
-export const DUTY_OVERLAP_SHIFTS = DUTY_OVERLAP_OPTIONS.map((o) => o.value);
+/** Fixed ward cover shifts — not user-editable attach modes. */
+export const COVER_SHIFTS = ['Morning', 'Afternoon', 'Night'];
 export const ON_DUTY_MEANINGS = ['Morning', 'Afternoon', 'Night', 'SOD', 'Office'];
 
-/** Office-style: Morning only — daily 8–2, overlaps Morning but separate, no take-ups. */
+/** Clinic / office operating weekdays (Mon–Fri default, like antenatal / polyclinic). */
+export const OFFICE_DAY_OPTIONS = [
+    { value: 'Mon', label: 'Mon' },
+    { value: 'Tue', label: 'Tue' },
+    { value: 'Wed', label: 'Wed' },
+    { value: 'Thu', label: 'Thu' },
+    { value: 'Fri', label: 'Fri' },
+    { value: 'Sat', label: 'Sat' },
+    { value: 'Sun', label: 'Sun' },
+];
+export const OFFICE_DAY_KEYS = OFFICE_DAY_OPTIONS.map((o) => o.value);
+export const DEFAULT_OFFICE_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+
+/** Internal cover bucket for each meaning (M/A/N fixed; Office → Morning-like). */
 export function defaultDutyOverlaps(meaning) {
     if (!ON_DUTY_MEANINGS.includes(meaning)) return [];
-    if (meaning === 'Office' || meaning === 'Morning' || meaning === 'SOD') return ['Morning'];
     if (meaning === 'Afternoon') return ['Afternoon'];
     if (meaning === 'Night') return ['Night'];
+    // Morning, SOD, Office → morning-like cover bucket (Office still separate / no take-ups)
     return ['Morning'];
 }
 
-/** Migrate legacy dutyMode → overlaps. */
-function overlapsFromLegacyMode(dutyMode, meaning) {
-    if (dutyMode === 'standard') return [...DUTY_OVERLAP_SHIFTS];
-    if (dutyMode === 'office' || dutyMode === 'morningLike') return ['Morning'];
+export function normalizeDutyOverlaps(_raw, meaning) {
     return defaultDutyOverlaps(meaning);
 }
 
-export function normalizeDutyOverlaps(raw, meaning, legacyMode = '') {
-    if (!ON_DUTY_MEANINGS.includes(meaning)) return [];
+export function defaultOfficeDays(meaning) {
+    if (meaning !== 'Office') return [];
+    return [...DEFAULT_OFFICE_DAYS];
+}
+
+export function normalizeOfficeDays(raw, meaning) {
+    if (meaning !== 'Office') return [];
     let list = Array.isArray(raw) ? raw.map((v) => String(v || '').trim()) : [];
-    list = list.filter((v) => DUTY_OVERLAP_SHIFTS.includes(v));
-    if (!list.length && legacyMode) list = overlapsFromLegacyMode(legacyMode, meaning);
-    if (!list.length) list = defaultDutyOverlaps(meaning);
-    // Stable order: Morning → Afternoon → Night
-    return DUTY_OVERLAP_SHIFTS.filter((s) => list.includes(s));
+    list = list.filter((v) => OFFICE_DAY_KEYS.includes(v));
+    if (!list.length) return defaultOfficeDays(meaning);
+    return OFFICE_DAY_KEYS.filter((d) => list.includes(d));
 }
 
-/** Tagged every cover shift → treat as a regular cover shift. */
-export function isRegularDutyOverlaps(overlaps) {
-    const set = new Set(overlaps || []);
-    return DUTY_OVERLAP_SHIFTS.every((s) => set.has(s));
+/** Office is clinic-style (no take-ups) unless rare outsideMorning flag. */
+export function isOfficeStyleEntry(meaning, outsideMorning = false) {
+    return meaning === 'Office' && !outsideMorning;
 }
 
-/**
- * Office-style post: Morning-only overlaps (8–2, separate from Morning, no take-ups).
- * Expanding overlaps means hand-off / take-up after the session.
- */
-export function isOfficeStyleOverlaps(meaning, overlaps) {
-    if (isRegularDutyOverlaps(overlaps)) return false;
-    const list = overlaps || [];
-    return meaning === 'Office' && list.length === 1 && list[0] === 'Morning';
+export function weekdayKeyFromDate(date) {
+    const keys = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return keys[new Date(date).getDay()] || '';
 }
 
 const KNOWN_LABEL_MEANING = {
@@ -77,8 +78,8 @@ const KNOWN_LABEL_MEANING = {
     SOD: 'SOD',
     OFC: 'Office',
     OFFICE: 'Office',
-    XM: 'Morning',
-    XA: 'Afternoon',
+    XM: '', // often clinic/office session — soft-suggest Office
+    XA: '', // often clinic/office session — soft-suggest Office
     XN: 'Night',
     PM: 'Morning',
     PA: 'Afternoon',
@@ -86,6 +87,14 @@ const KNOWN_LABEL_MEANING = {
     OFF: 'Off',
     P: '', // Polyclinic / office hours — soft-suggest Office
 };
+
+function looksLikeOfficeCode(label, unit) {
+    const u = String(unit || '');
+    if (label === 'P' || label === 'OFC' || label === 'OFFICE') return true;
+    if (label === 'XM' || label === 'XA') return true;
+    if (/polyclinic|clinic|office|antenatal/i.test(u)) return true;
+    return false;
+}
 
 function normalizeLabel(raw) {
     return String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
@@ -160,23 +169,31 @@ export function buildSetupProposal(preview, savedSetup = null) {
                 if (!unit) unit = meaning;
                 meaning = KNOWN_LABEL_MEANING[label] || '';
             }
-            // Polyclinic / office-hours codes — soft-suggest Office (08:00–14:00), not ward Morning
-            if (!meaning && unit && (/polyclinic/i.test(unit) || label === 'P')) {
+            // Clinic / office-hours codes — soft-suggest Office (morning-like clinic days)
+            if (!saved && looksLikeOfficeCode(label, unit) && (!meaning || meaning === 'Morning' || meaning === 'Afternoon')) {
+                meaning = 'Office';
+            }
+            if (!meaning && looksLikeOfficeCode(label, unit)) {
                 meaning = 'Office';
             }
             const dutyOverlaps = ON_DUTY_MEANINGS.includes(meaning)
-                ? normalizeDutyOverlaps(saved?.dutyOverlaps, meaning, saved?.dutyMode)
+                ? normalizeDutyOverlaps(saved?.dutyOverlaps, meaning)
                 : [];
+            const officeDays = meaning === 'Office'
+                ? normalizeOfficeDays(saved?.officeDays, meaning)
+                : [];
+            const outsideMorning = meaning === 'Office' ? Boolean(saved?.outsideMorning) : false;
             const confidence = confidenceFor(label, meaning, Boolean(saved));
-            // Always confirm when we only guessed from a unit / office tag
             const needsConfirm = confidence !== 'high' || !meaning
-                || ((/polyclinic/i.test(unit) || meaning === 'Office') && !saved && label === 'P');
+                || (!saved && meaning === 'Office' && looksLikeOfficeCode(label, unit));
             return {
                 label,
                 count,
                 meaning: meaning || '',
                 unit,
                 dutyOverlaps,
+                officeDays,
+                outsideMorning,
                 confidence,
                 needsConfirm,
                 fromSaved: Boolean(saved),
@@ -188,6 +205,8 @@ export function buildSetupProposal(preview, savedSetup = null) {
         meaning: c.meaning,
         unit: c.unit,
         dutyOverlaps: c.dutyOverlaps,
+        officeDays: c.officeDays,
+        outsideMorning: c.outsideMorning,
         confidence: c.confidence,
         needsConfirm: c.needsConfirm,
     }));
@@ -270,8 +289,12 @@ export function applyRosterSetup(preview, setup = {}) {
             const meaning = entry?.meaning || KNOWN_LABEL_MEANING[label] || '';
             const unit = entry?.unit || cell.unit || unitFromLabel(label) || '';
             const dutyOverlaps = ON_DUTY_MEANINGS.includes(meaning)
-                ? normalizeDutyOverlaps(entry?.dutyOverlaps, meaning, entry?.dutyMode)
+                ? normalizeDutyOverlaps(entry?.dutyOverlaps, meaning)
                 : [];
+            const officeDays = meaning === 'Office'
+                ? normalizeOfficeDays(entry?.officeDays, meaning)
+                : [];
+            const outsideMorning = meaning === 'Office' ? Boolean(entry?.outsideMorning) : false;
             const code = onLeave && !meaning ? 'LV' : codeLetter(meaning) || (meaning ? '' : (cell.code || ''));
             const sod = meaning === 'SOD' || Boolean(cell.sod);
             const next = {
@@ -282,6 +305,8 @@ export function applyRosterSetup(preview, setup = {}) {
                 unit,
                 meaning: onLeave && (!meaning || meaning === 'Leave') ? 'Leave' : meaning,
                 dutyOverlaps,
+                officeDays,
+                outsideMorning,
             };
             cells.push(next);
             if (ON_DUTY_MEANINGS.includes(next.meaning)) {
@@ -290,6 +315,8 @@ export function applyRosterSetup(preview, setup = {}) {
                     code: next.code,
                     sod: next.sod,
                     dutyOverlaps: next.dutyOverlaps,
+                    officeDays: next.officeDays,
+                    outsideMorning: next.outsideMorning,
                 });
             }
         }
@@ -313,14 +340,19 @@ export function applyRosterSetup(preview, setup = {}) {
     return {
         ...preview,
         staff,
-        legend: legend.map((e) => ({
-            label: e.label,
-            meaning: e.meaning,
-            unit: e.unit || '',
-            dutyOverlaps: ON_DUTY_MEANINGS.includes(e.meaning)
-                ? normalizeDutyOverlaps(e.dutyOverlaps, e.meaning, e.dutyMode)
-                : [],
-        })),
+        legend: legend.map((e) => {
+            const meaning = e.meaning;
+            return {
+                label: e.label,
+                meaning,
+                unit: e.unit || '',
+                dutyOverlaps: ON_DUTY_MEANINGS.includes(meaning)
+                    ? normalizeDutyOverlaps(e.dutyOverlaps, meaning)
+                    : [],
+                officeDays: meaning === 'Office' ? normalizeOfficeDays(e.officeDays, meaning) : [],
+                outsideMorning: meaning === 'Office' ? Boolean(e.outsideMorning) : false,
+            };
+        }),
         setupApplied: true,
     };
 }
@@ -334,8 +366,10 @@ export function buildRosterSetupPayload(setup) {
                 meaning,
                 unit: String(e.unit || '').trim(),
                 dutyOverlaps: ON_DUTY_MEANINGS.includes(meaning)
-                    ? normalizeDutyOverlaps(e.dutyOverlaps, meaning, e.dutyMode)
+                    ? normalizeDutyOverlaps(e.dutyOverlaps, meaning)
                     : [],
+                officeDays: meaning === 'Office' ? normalizeOfficeDays(e.officeDays, meaning) : [],
+                outsideMorning: meaning === 'Office' ? Boolean(e.outsideMorning) : false,
             };
         }),
         inchargeStaffKey: setup.inchargeStaffKey || '',
