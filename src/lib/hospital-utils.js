@@ -23,6 +23,8 @@ export function defaultHospitalDoc({ hospitalName, hospitalType, hospitalRegion,
             maxConsecutiveDays: 6,
             maxConsecutiveNights: 3,
             minSeniorStaffPerDay: 1,
+            minSeniorStaffPerShift: 1,
+            supervisoryCoverageSeverity: 'warning',
             maxHoursPerWeek: 48,
             validationRules: {
                 enforceLeaveConflicts: true,

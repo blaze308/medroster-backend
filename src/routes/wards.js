@@ -44,6 +44,24 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
         const duplicate = existingWards.docs.find((doc) => normalizeOrgName(doc.data().name) === normalizeOrgName(name));
         if (duplicate) return res.status(200).json({ _id: duplicate.id, ...duplicate.data() });
 
+        const hospitalSettings = hospitalSnap.data()?.settings || {};
+        const incomingGuidelines = req.body.guidelines && typeof req.body.guidelines === 'object'
+            ? req.body.guidelines
+            : {};
+        const guidelines = {
+            minSeniorPerShift: Math.max(
+                0,
+                Number(
+                    incomingGuidelines.minSeniorPerShift ??
+                    hospitalSettings.minSeniorStaffPerShift ??
+                    hospitalSettings.minSeniorStaffPerDay ??
+                    1
+                ) || 0
+            ),
+            expectInCharge: incomingGuidelines.expectInCharge !== false,
+            notes: String(incomingGuidelines.notes || '').trim(),
+        };
+
         const now = new Date().toISOString();
         const ref = db.collection(`hospitals/${hospitalId}/wards`).doc();
         const data = {
@@ -52,6 +70,7 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
             name,
             description: String(req.body.description || '').trim(),
             isActive: true,
+            guidelines,
             createdAt: now,
             updatedAt: now,
         };
@@ -73,12 +92,24 @@ router.patch('/:wardId', requireAuth, requireHospital, requireWriteAccess, async
         const snap = await ref.get();
         if (!snap.exists) return res.status(404).json({ error: 'Ward not found' });
 
-        const allowed = ['name', 'description', 'isActive'];
+        const allowed = ['name', 'description', 'isActive', 'guidelines'];
         const update = { updatedAt: new Date().toISOString() };
         for (const key of allowed) {
             if (req.body[key] !== undefined) update[key] = req.body[key];
         }
         if (update.name) update.name = String(update.name).trim();
+        if (update.guidelines && typeof update.guidelines === 'object') {
+            const prev = snap.data()?.guidelines || {};
+            const g = update.guidelines;
+            update.guidelines = {
+                minSeniorPerShift: Math.max(
+                    0,
+                    Number(g.minSeniorPerShift ?? prev.minSeniorPerShift ?? 1) || 0
+                ),
+                expectInCharge: g.expectInCharge !== undefined ? Boolean(g.expectInCharge) : (prev.expectInCharge !== false),
+                notes: String(g.notes ?? prev.notes ?? '').trim(),
+            };
+        }
 
         await ref.update(update);
         const updated = await ref.get();

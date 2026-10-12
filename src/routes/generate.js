@@ -90,6 +90,12 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
         const hospitalData = hospitalSnap.data();
         const schedule = { _id: schedSnap.id, ...schedSnap.data() };
 
+        let wardGuidelines = {};
+        if (schedule.wardId) {
+            const wardSnap = await db.doc(`hospitals/${hospitalId}/wards/${schedule.wardId}`).get();
+            if (wardSnap.exists) wardGuidelines = wardSnap.data()?.guidelines || {};
+        }
+
         const staffSnap = await db.collection(`hospitals/${hospitalId}/staff`)
             .where('wardId', '==', schedule.wardId)
             .where('employmentStatus', 'in', ['Active', 'Probation'])
@@ -104,8 +110,16 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
         const existingRefs = existingSnap.docs.map((d) => d.ref);
 
         const shiftTypes = hospitalData.shiftTypes || [];
-        const settings = hospitalData.settings || {};
-        const minSenior = Math.max(1, settings.minSeniorStaffPerDay ?? 1);
+        const baseSettings = hospitalData.settings || {};
+        const settings = {
+            ...baseSettings,
+            minSeniorStaffPerShift:
+                wardGuidelines.minSeniorPerShift ??
+                baseSettings.minSeniorStaffPerShift ??
+                baseSettings.minSeniorStaffPerDay ??
+                1,
+        };
+        const minSenior = Math.max(0, settings.minSeniorStaffPerShift ?? 1);
         const maxConsecutive = settings.maxConsecutiveDays ?? 6;
         const maxNights = settings.maxConsecutiveNights ?? 3;
         const maxHoursPerWeek = settings.maxHoursPerWeek ?? 48;
@@ -133,10 +147,20 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
             allStaff
                 .filter((s) => {
                     const t = s.staffType || classifyStaffType(s.rank);
-                    return t === 'senior' || t === 'pno' || s.wardRole === 'incharge';
+                    const role = s.wardRole;
+                    return (
+                        t === 'senior' ||
+                        t === 'pno' ||
+                        role === 'incharge' ||
+                        role === 'assistant' ||
+                        role === 'shift_incharge'
+                    );
                 })
                 .map((s) => s._id)
         );
+
+        const needsSeniorCoverage = (name) =>
+            name === 'Morning' || name === 'Afternoon' || name === 'Night';
 
         for (const day of days) {
             for (const [sid, last] of lastWorkedDate.entries()) {
@@ -148,7 +172,7 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
             }
 
             const assignedToday = new Set();
-            const seniorAssignedToday = new Set();
+            const seniorsByShift = new Map();
             const filledShiftsToday = [];
             const orderedShifts = [...shiftTypes].sort((a, b) => {
                 if (a.name === 'Morning' && b.name !== 'Morning') return -1;
@@ -160,7 +184,6 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
                 if (filledShiftsToday.some((filled) => shiftsOverlap(filled, shift))) continue;
 
                 const isNight = shift.name === 'Night';
-                const isMorning = shift.name === 'Morning';
                 const shiftHours = shiftDurationHours(shift);
 
                 const pool = allStaff.filter((s) => {
@@ -193,9 +216,13 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
                 });
 
                 let pick = pool[0];
-                if (isMorning && seniorAssignedToday.size < minSenior) {
-                    const seniorPick = pool.find((s) => seniorIds.has(s._id));
-                    if (seniorPick) pick = seniorPick;
+                // Prefer a senior/in-charge on each coverage shift when available; never fail if none.
+                if (needsSeniorCoverage(shift.name) && minSenior > 0) {
+                    const have = seniorsByShift.get(shift.name)?.size || 0;
+                    if (have < minSenior) {
+                        const seniorPick = pool.find((s) => seniorIds.has(s._id));
+                        if (seniorPick) pick = seniorPick;
+                    }
                 }
 
                 const sid = pick._id;
@@ -220,7 +247,10 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
                 lastWorkedDate.set(sid, day);
                 assignedToday.add(sid);
                 filledShiftsToday.push(shift);
-                if (seniorIds.has(sid)) seniorAssignedToday.add(sid);
+                if (seniorIds.has(sid) && needsSeniorCoverage(shift.name)) {
+                    if (!seniorsByShift.has(shift.name)) seniorsByShift.set(shift.name, new Set());
+                    seniorsByShift.get(shift.name).add(sid);
+                }
             }
         }
 

@@ -384,11 +384,30 @@ router.post('/:schedId/validate', requireAuth, requireHospital, async (req, res)
             db.collection(`hospitals/${hospitalId}/schedules/${schedId}/assignments`).where('wardId', '==', schedule.wardId).get(),
         ]);
 
+        let wardGuidelines = {};
+        if (schedule.wardId) {
+            const wardSnap = await db.doc(`hospitals/${hospitalId}/wards/${schedule.wardId}`).get();
+            if (wardSnap.exists) wardGuidelines = wardSnap.data()?.guidelines || {};
+        }
+        const baseSettings = hospitalData.settings || {};
+        const mergedSettings = {
+            ...baseSettings,
+            minSeniorStaffPerShift:
+                wardGuidelines.minSeniorPerShift ??
+                baseSettings.minSeniorStaffPerShift ??
+                baseSettings.minSeniorStaffPerDay ??
+                1,
+            minSeniorStaffPerDay:
+                wardGuidelines.minSeniorPerShift ??
+                baseSettings.minSeniorStaffPerDay ??
+                1,
+        };
+
         const { validateFullSchedule } = await import('../lib/validation.js');
         const result = validateFullSchedule({
             staff: staffSnap.docs.map((s) => ({ _id: s.id, ...s.data() })),
             assignments: assignSnap.docs.map((a) => ({ _id: a.id, ...a.data() })),
-            settings: hospitalData.settings,
+            settings: mergedSettings,
             schedule,
         });
 

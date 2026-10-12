@@ -4,8 +4,6 @@ function resolveStaffType(staff) {
     return staff?.staffType || classifyStaffType(staff?.rank);
 }
 
-const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
 function dateKey(date) {
     return new Date(date).toISOString().split('T')[0];
 }
@@ -105,6 +103,40 @@ function isHoliday(date, schedule) {
     return holidayKeys(schedule).has(dateKey(date));
 }
 
+function formatShortDate(date) {
+    return new Date(date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+/** Senior rank, PNO, or ward supervisory roles — used for coverage guidelines. */
+export function isSupervisoryCapable(staff) {
+    if (!staff) return false;
+    const type = resolveStaffType(staff);
+    const role = staff.wardRole;
+    return (
+        type === 'senior' ||
+        type === 'pno' ||
+        role === 'incharge' ||
+        role === 'assistant' ||
+        role === 'shift_incharge'
+    );
+}
+
+function minSeniorPerShift(settings) {
+    const raw = settings?.minSeniorStaffPerShift ?? settings?.minSeniorStaffPerDay ?? 1;
+    return Math.max(0, Number(raw) || 0);
+}
+
+/** Absolute start/end minutes from a fixed epoch day for an assignment. */
+function assignmentBounds(assignment) {
+    const day = new Date(assignment.date);
+    day.setHours(0, 0, 0, 0);
+    const dayMins = Math.floor(day.getTime() / 60000);
+    const start = dayMins + timeToMinutes(assignment.shiftType?.startTime);
+    let end = dayMins + timeToMinutes(assignment.shiftType?.endTime);
+    if (end <= start) end += 24 * 60;
+    return { start, end };
+}
+
 export function validateLeaveConflict(staff, date) {
     if (!staff) return { valid: false, error: 'Staff member not found' };
     if (isStaffOnLeave(staff, date)) {
@@ -120,6 +152,12 @@ export function validateRoleShiftCompatibility(staff, shiftType) {
         isNightShift(shiftType) &&
         (staff.noNightShift || staff.maternityNoNight || staff.wardRole === 'incharge' || staff.wardRole === 'assistant')
     ) {
+        if (staff.maternityNoNight) {
+            return {
+                valid: false,
+                error: `${staffDisplayName(staff)} cannot work night duty (Labour Act §55: no night work 22:00–07:00 while protected)`,
+            };
+        }
         return { valid: false, error: `${staffDisplayName(staff)} cannot be assigned to night shifts` };
     }
     return { valid: true };
@@ -151,33 +189,47 @@ export function validateWorkRestriction(staff, date, shiftType, schedule) {
     return { valid: true };
 }
 
+/**
+ * Ghana guideline: prefer ≥N senior / in-charge on Morning, Afternoon, Night.
+ * SOD counts toward day-side (Morning + Afternoon). Always soft — never blocks.
+ * Returns { warnings: [{ shift, message, missingCount }] }.
+ */
 export function validateSupervisoryCoverage({ date, assignments, staffById, settings }) {
-    const minSeniorStaff = Math.max(1, settings?.minSeniorStaffPerDay ?? 1);
-    const dateStr = dateKey(date);
-    const morningAssignments = assignments.filter((a) => {
-        if (dateKey(a.date) !== dateStr) return false;
-        return shiftName(a.shiftType) === 'Morning';
-    });
-    const seniorCount = morningAssignments.filter((a) => {
-        const staff = staffById.get(String(a.staffId));
-        if (!staff) return false;
-        const type = resolveStaffType(staff);
-        return type === 'senior' || type === 'pno' || staff.wardRole === 'incharge';
-    }).length;
+    const minSenior = minSeniorPerShift(settings);
+    const warnings = [];
+    if (minSenior <= 0) return { valid: true, warnings };
 
-    if (seniorCount < minSeniorStaff) {
-        const dateFormatted = new Date(date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-        return {
-            valid: false,
-            error: `${dateFormatted} morning has no senior / in-charge`,
-            missingCount: minSeniorStaff - seniorCount,
-        };
+    const dateStr = dateKey(date);
+    const dayAssignments = assignments.filter((a) => dateKey(a.date) === dateStr);
+
+    const coverageShifts = ['Morning', 'Afternoon', 'Night'];
+    for (const shift of coverageShifts) {
+        const onShift = dayAssignments.filter((a) => {
+            const name = shiftName(a.shiftType);
+            if (name === shift) return true;
+            // SOD covers day-side supervisory presence
+            if ((shift === 'Morning' || shift === 'Afternoon') && name === 'SOD') return true;
+            return false;
+        });
+
+        if (onShift.length === 0) continue;
+
+        const seniorCount = onShift.filter((a) => isSupervisoryCapable(staffById.get(String(a.staffId)))).length;
+        if (seniorCount < minSenior) {
+            warnings.push({
+                shift,
+                message: `${formatShortDate(date)} ${shift} has no senior / in-charge (guideline)`,
+                missingCount: minSenior - seniorCount,
+            });
+        }
     }
-    return { valid: true };
+
+    return { valid: true, warnings };
 }
 
 export function validateMaxHoursPerWeek({ staffId, assignments, settings, schedule }) {
     const maxHours = settings?.maxHoursPerWeek ?? 48;
+    const labourGuidelineHours = 40;
     const target = String(staffId);
     const own = assignments.filter((a) => String(a.staffId) === target);
     if (!own.length) return { valid: true };
@@ -192,10 +244,99 @@ export function validateMaxHoursPerWeek({ staffId, assignments, settings, schedu
     for (const hours of byWeek.values()) {
         if (hours > worst) worst = hours;
     }
+
     if (worst > maxHours) {
-        return { valid: true, warning: `Total ${Math.round(worst)}h in a 7-day window (limit: ${maxHours}h)` };
+        return {
+            valid: true,
+            warning: `Total ${Math.round(worst)}h in a 7-day window (hospital target: ${maxHours}h; Labour Act guideline: ${labourGuidelineHours}h)`,
+        };
+    }
+    if (worst > labourGuidelineHours) {
+        return {
+            valid: true,
+            warning: `Total ${Math.round(worst)}h in a 7-day window — Labour Act guideline is ${labourGuidelineHours}h`,
+        };
     }
     return { valid: true };
+}
+
+/** Labour Act §41: ≥12h continuous rest between consecutive working days/shifts. Soft only. */
+export function validateDailyRest({ staffId, assignments }) {
+    const target = String(staffId);
+    const own = assignments
+        .filter((a) => String(a.staffId) === target && a.shiftType?.startTime && a.shiftType?.endTime)
+        .map((a) => ({ ...a, ...assignmentBounds(a) }))
+        .sort((a, b) => a.start - b.start);
+
+    if (own.length < 2) return { valid: true };
+
+    const gaps = [];
+    for (let i = 1; i < own.length; i++) {
+        const gapHours = (own[i].start - own[i - 1].end) / 60;
+        if (gapHours >= 0 && gapHours < 12) {
+            gaps.push(gapHours);
+        }
+    }
+    if (gaps.length === 0) return { valid: true };
+    const worst = Math.min(...gaps);
+    return {
+        valid: true,
+        warning: `Less than 12h rest between shifts (shortest gap ~${Math.round(worst * 10) / 10}h — Labour Act §41 guideline)`,
+    };
+}
+
+/**
+ * Labour Act §42: ~48h consecutive rest in every 7 normal working days.
+ * Soft check over schedule weeks: longest contiguous off stretch < 48h while they worked that week.
+ */
+export function validateWeeklyRest({ staffId, assignments, schedule }) {
+    const target = String(staffId);
+    const own = assignments.filter((a) => String(a.staffId) === target);
+    if (!own.length) return { valid: true };
+
+    const scheduleStart = schedule?.startDate ? new Date(schedule.startDate) : earliestAssignmentDate(own);
+    scheduleStart.setHours(0, 0, 0, 0);
+    const scheduleEnd = schedule?.endDate ? new Date(schedule.endDate) : earliestAssignmentDate(own);
+    scheduleEnd.setHours(0, 0, 0, 0);
+
+    const worked = new Set(own.map((a) => dateKey(a.date)));
+    let weekStart = new Date(scheduleStart);
+    let flagged = false;
+
+    while (weekStart <= scheduleEnd) {
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 7);
+
+        let workedInWeek = false;
+        let longestOffHours = 0;
+        let runOffHours = 0;
+
+        for (let d = new Date(weekStart); d < weekEnd && d <= scheduleEnd; d.setDate(d.getDate() + 1)) {
+            const key = dateKey(d);
+            if (worked.has(key)) {
+                workedInWeek = true;
+                longestOffHours = Math.max(longestOffHours, runOffHours);
+                runOffHours = 0;
+            } else {
+                runOffHours += 24;
+            }
+        }
+        longestOffHours = Math.max(longestOffHours, runOffHours);
+
+        // Also account for overnight: if last shift ends after midnight into an off day, rest already partially counted as calendar offs.
+        if (workedInWeek && longestOffHours < 48) {
+            flagged = true;
+            break;
+        }
+
+        weekStart.setDate(weekStart.getDate() + 7);
+    }
+
+    if (!flagged) return { valid: true };
+    return {
+        valid: true,
+        warning: 'No 48h contiguous rest in a 7-day window — Labour Act §42 guideline',
+    };
 }
 
 export function validateConsecutiveShifts({ staffId, date, assignments, settings }) {
@@ -255,13 +396,17 @@ export function validateAssignment({ staff, date, shiftType, context }) {
         const r = validateConsecutiveShifts({ staffId: staff._id || staff.id, date, assignments, settings });
         if (r.warning) warnings.push(r.warning);
     }
+    const provisional = [...assignments, { staffId: staff._id || staff.id, date, shiftType }];
     const hoursCheck = validateMaxHoursPerWeek({
         staffId: staff._id || staff.id,
-        assignments: [...assignments, { staffId: staff._id || staff.id, date, shiftType }],
+        assignments: provisional,
         settings,
         schedule,
     });
     if (hoursCheck.warning) warnings.push(hoursCheck.warning);
+
+    const dailyRest = validateDailyRest({ staffId: staff._id || staff.id, assignments: provisional });
+    if (dailyRest.warning) warnings.push(dailyRest.warning);
 
     return { valid: errors.length === 0, errors, warnings };
 }
@@ -275,12 +420,21 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
 
     dates.forEach((dateStr) => {
         const date = new Date(dateStr);
-        const r = validateSupervisoryCoverage({ date, assignments, staffById, settings });
-        if (!r.valid) {
-            errors.push({ type: 'supervisory_coverage', date: dateStr, message: r.error, severity: 'error' });
+        const coverage = validateSupervisoryCoverage({ date, assignments, staffById, settings });
+        for (const w of coverage.warnings || []) {
+            warnings.push({
+                type: 'supervisory_coverage',
+                date: dateStr,
+                shift: w.shift,
+                message: w.message,
+                severity: 'warning',
+            });
             if (!dateViolations[dateStr]) dateViolations[dateStr] = [];
-            dateViolations[dateStr].push('missing_supervisor');
+            if (!dateViolations[dateStr].includes('missing_supervisor')) {
+                dateViolations[dateStr].push('missing_supervisor');
+            }
         }
+
         const dayAssignments = assignments.filter((a) => dateKey(a.date) === dateStr);
         dayAssignments.forEach((a) => {
             const sm = staffById.get(String(a.staffId));
@@ -301,8 +455,20 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
         const id = String(sm._id || sm.id);
         const own = assignments.filter((a) => String(a.staffId) === id);
         if (!own.length) return;
+
         const r = validateMaxHoursPerWeek({ staffId: id, assignments, settings, schedule });
         if (r.warning) warnings.push({ type: 'max_hours', staffId: id, staffName: staffDisplayName(sm), message: r.warning, severity: 'warning' });
+
+        const dailyRest = validateDailyRest({ staffId: id, assignments: own });
+        if (dailyRest.warning) {
+            warnings.push({ type: 'daily_rest', staffId: id, staffName: staffDisplayName(sm), message: dailyRest.warning, severity: 'warning' });
+        }
+
+        const weeklyRest = validateWeeklyRest({ staffId: id, assignments: own, schedule });
+        if (weeklyRest.warning) {
+            warnings.push({ type: 'weekly_rest', staffId: id, staffName: staffDisplayName(sm), message: weeklyRest.warning, severity: 'warning' });
+        }
+
         if (schedule?.startDate && schedule?.endDate && sm.wardRole === 'regular') {
             const start = new Date(schedule.startDate);
             const end = new Date(schedule.endDate);
@@ -316,6 +482,8 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
         }
     });
 
+    const coverageWarnings = warnings.filter((e) => e.type === 'supervisory_coverage');
+
     return {
         valid: errors.length === 0,
         errors,
@@ -326,7 +494,7 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
             totalWarnings: warnings.length,
             leaveConflicts: errors.filter((e) => e.type === 'leave_conflict').length,
             roleViolations: errors.filter((e) => e.type === 'role_shift_incompatible').length,
-            coverageIssues: errors.filter((e) => e.type === 'supervisory_coverage').length,
+            coverageIssues: coverageWarnings.length,
             restrictionViolations: errors.filter((e) => e.type === 'work_restriction').length,
         },
     };

@@ -124,9 +124,15 @@ router.patch('/:id', requireAuth, requireHospital, requireWriteAccess, async (re
         if (update.settings && typeof update.settings === 'object') {
             const incoming = update.settings;
             const vr = incoming.validationRules || {};
+            const minSenior = Math.max(
+                0,
+                incoming.minSeniorStaffPerShift ?? incoming.minSeniorStaffPerDay ?? 1
+            );
             update.settings = {
                 ...incoming,
-                minSeniorStaffPerDay: Math.max(1, incoming.minSeniorStaffPerDay ?? 1),
+                minSeniorStaffPerDay: minSenior,
+                minSeniorStaffPerShift: minSenior,
+                supervisoryCoverageSeverity: incoming.supervisoryCoverageSeverity || 'warning',
                 validationRules: {
                     ...vr,
                     enforceLeaveConflicts: true,
