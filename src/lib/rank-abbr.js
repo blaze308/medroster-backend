@@ -35,6 +35,12 @@ export const RANK_ABBR = {
     'Senior Physician Assistant': 'SPA',
     'Community Health Nurse': 'CHN',
     'Community Health Nursing Officer': 'CHNO',
+    'Technician': 'Tech',
+    'Senior Technician': 'STech',
+    'Technical Officer': 'TO',
+    'Senior Technical Officer': 'STO',
+    'Principal Technical Officer': 'PTO',
+    'Chief Technical Officer': 'CTO',
 };
 
 /** Ambiguous abbreviations resolved toward midwifery (ward roster context). */
@@ -63,10 +69,20 @@ const ABBR_TO_RANK = {
     NAC: 'Nurse Assistant Clinical',
     NAP: 'Nurse Assistant Preventive',
     HO: 'House Officer',
+    SRMO: 'Senior Medical Officer',
+    MEDO: 'Medical Officer',
     PA: 'Physician Assistant',
     SPA: 'Senior Physician Assistant',
     CHN: 'Community Health Nurse',
     CHNO: 'Community Health Nursing Officer',
+    TECH: 'Technician',
+    STECH: 'Senior Technician',
+    TO: 'Technical Officer',
+    STO: 'Senior Technical Officer',
+    PTO: 'Principal Technical Officer',
+    CTO: 'Chief Technical Officer',
+    ROT: 'Technical Officer',
+    RAD: 'Technical Officer',
 };
 
 export function cleanRankAbbr(raw) {
@@ -96,7 +112,36 @@ export function expandRank(value) {
     if (fromAbbr) return { rankAbbr: cleanRankAbbr(trimmed), rankFull: fromAbbr };
     const abbr = RANK_ABBR[trimmed];
     if (abbr) return { rankAbbr: abbr, rankFull: trimmed };
+    // "Senior Staff Nurse (SSN)" or "SSN - Senior Staff Nurse"
+    const paren = trimmed.match(/^(.+?)\s*\(([^)]+)\)\s*$/);
+    if (paren) {
+        const inner = expandRank(paren[2]);
+        if (inner.rankFull) return inner;
+        const outer = expandRank(paren[1]);
+        if (outer.rankFull) return outer;
+    }
     return { rankAbbr: cleanRankAbbr(trimmed) || trimmed, rankFull: trimmed };
+}
+
+/** Pull a trailing rank token out of a name cell, e.g. "Ada Mensah (SSN)" or "Ada Mensah, TO". */
+export function splitNameAndRank(rawName) {
+    const name = String(rawName || '').replace(/\s+/g, ' ').trim();
+    if (!name) return { name: '', rank: '' };
+    const patterns = [
+        /^(.+?)\s*\(([A-Za-z][A-Za-z0-9./]{0,14})\)\s*$/,
+        /^(.+?)\s*[-–—]\s*([A-Za-z][A-Za-z0-9./]{1,14})\s*$/,
+        /^(.+?),\s*([A-Za-z][A-Za-z0-9./]{1,14})\s*$/,
+    ];
+    for (const re of patterns) {
+        const m = name.match(re);
+        if (!m) continue;
+        const maybeRank = m[2].trim();
+        const expanded = expandRank(maybeRank);
+        if (expanded.rankFull || rankFromAbbr(maybeRank) || RANK_ABBR[maybeRank]) {
+            return { name: m[1].trim(), rank: expanded.rankFull || maybeRank };
+        }
+    }
+    return { name, rank: '' };
 }
 
 export function categoryFromRank(rankFull) {

@@ -44,8 +44,19 @@ router.post('/staff/extract', extractLimiter, async (req, res) => {
         if (!preview.staff?.length) return res.status(400).json({ error: 'No staff rows found in that roster' });
         const maxStaff = TIER_LIMITS.guest.maxStaff;
         const staff = (preview.staff || []).slice(0, maxStaff);
-        console.log(`[GUEST_API] POST extract OK in ${Date.now() - t0}ms staff=${staff.length}`);
-        return res.json({ ...preview, staff, source: preview.source || 'roster' });
+        const requestMs = Date.now() - t0;
+        console.log(`[GUEST_API] POST extract OK in ${requestMs}ms staff=${staff.length}`);
+        return res.json({
+            ...preview,
+            staff,
+            source: preview.source || 'roster',
+            requestMs,
+            extractDebug: {
+                ...(preview.extractDebug || {}),
+                requestMs,
+                route: 'guest',
+            },
+        });
     } catch (err) {
         console.error(`[GUEST_API] POST extract FAIL in ${Date.now() - t0}ms`, err.message);
         logError('GUEST_API', 'Roster extract failed', err);

@@ -18,6 +18,7 @@ export function defaultHospitalDoc({ hospitalName, hospitalType, hospitalRegion,
             { id: 'afternoon', name: 'Afternoon', color: 'afternoon', startTime: '14:00', endTime: '20:00' },
             { id: 'night', name: 'Night', color: 'night', startTime: '20:00', endTime: '08:00' },
             { id: 'sod', name: 'SOD', color: 'sod', startTime: '08:00', endTime: '20:00' },
+            { id: 'office', name: 'Office', color: 'office', startTime: '08:00', endTime: '14:00' },
         ],
         settings: {
             maxConsecutiveDays: 6,

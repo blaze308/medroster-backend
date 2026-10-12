@@ -180,12 +180,37 @@ function findNameCol(grid, dateRow) {
     return 0;
 }
 
-function findRankCol(grid, dateRow) {
-    for (let r = Math.max(1, dateRow - 3); r <= dateRow; r++) {
-        const idx = (grid[r] || []).findIndex((c) => /^RANK$/i.test(c.text));
+function findRankCol(grid, dateRow, nameCol = 0, dayStartCol = 99) {
+    for (let r = Math.max(0, dateRow - 4); r <= dateRow; r++) {
+        const idx = (grid[r] || []).findIndex((c) =>
+            /^(RANK|CADRE|GRADE|DESIGNATION|DESIG\.?|POSITION|TITLE|CATEGORY)$/i.test(String(c.text || '').trim())
+            || /RANK|CADRE|GRADE|DESIG/i.test(String(c.text || ''))
+        );
         if (idx >= 0) return idx;
     }
-    return -1;
+    // Infer a short rank/cadre column between name and the first day number
+    const start = Math.max(0, nameCol + 1);
+    const end = Math.min(dayStartCol, (grid[dateRow] || []).length);
+    let best = { col: -1, score: 0 };
+    for (let c = start; c < end; c++) {
+        let hits = 0;
+        let samples = 0;
+        for (let r = dateRow + 1; r < Math.min(grid.length, dateRow + 40); r++) {
+            const t = String(grid[r][c]?.text || '').trim();
+            if (!t) continue;
+            samples += 1;
+            if (
+                /^[A-Za-z][A-Za-z./]{0,14}$/.test(t)
+                && !/^(XM|XA|XN|SOD|OFF|YES|NO|MALE|FEMALE)$/i.test(t)
+                && t.length <= 18
+            ) {
+                hits += 1;
+            }
+        }
+        const score = samples >= 3 ? hits / samples : 0;
+        if (score >= 0.45 && score > best.score) best = { col: c, score };
+    }
+    return best.col;
 }
 
 /**
@@ -216,7 +241,8 @@ export async function parseXlsxRoster(buffer) {
     const dateRow = grid[dateRowIdx];
     const dateStart = dateRow.findIndex((c) => /^\d{1,2}$/.test(c.text));
     const nameCol = findNameCol(grid, dateRowIdx);
-    const rankCol = findRankCol(grid, dateRowIdx);
+    const dateStartProbe = dateRow.findIndex((c) => /^\d{1,2}$/.test(c.text));
+    const rankCol = findRankCol(grid, dateRowIdx, nameCol, dateStartProbe >= 0 ? dateStartProbe : 99);
 
     const days = [];
     let monthIndex = MONTHS[String(titleInfo.month || '').toUpperCase()];
@@ -249,23 +275,23 @@ export async function parseXlsxRoster(buffer) {
     }
 
     const staffRows = [];
-    let no = 0;
     for (let r = dateRowIdx + 1; r < grid.length; r++) {
         const name = (grid[r][nameCol]?.text || '').replace(/\s+/g, ' ').trim();
         if (!/[A-Za-z]{2,}/.test(name)) continue;
         if (/^(STAFF NAME|NAME|RANK|NO|WEEK)$/i.test(name)) continue;
         if (SHIFTISH.test(name)) continue;
-        no += 1;
         const rank = rankCol >= 0 ? (grid[r][rankCol]?.text || '') : '';
         const cells = days.map((day) => {
             const cell = grid[r][day.col] || { text: '', fill: '' };
+            // Blank duty cells on these week-band sheets mean Off, not “unknown”
+            const text = String(cell.text || '').trim() || 'O';
             return {
-                text: cell.text,
+                text,
                 fill: cell.fill,
                 fontColor: '',
                 date: day.date,
                 sod: false,
-                leaveFill: /^L$/i.test(cell.text),
+                leaveFill: /^L$/i.test(text),
             };
         });
         const leaveCells = cells.filter((c) => /^L$/i.test(c.text)).length;
@@ -273,7 +299,6 @@ export async function parseXlsxRoster(buffer) {
             ? 'Leave'
             : (leaveCells ? 'Leave' : '');
         staffRows.push({
-            no: String(no),
             name,
             rank,
             cells,
@@ -283,13 +308,49 @@ export async function parseXlsxRoster(buffer) {
 
     if (!staffRows.length) throw new Error('No staff rows found in that spreadsheet');
 
+    // Radiology sheets often list the same person twice (duty row + leave block) — merge by name
+    const mergedRows = mergeStaffRowsByName(staffRows);
+
     const monthIdx = MONTHS[String(titleInfo.month || '').toUpperCase()];
     const ym = (titleInfo.year && monthIdx != null)
         ? `${titleInfo.year}-${String(monthIdx + 1).padStart(2, '0')}`
         : '';
-    const daysOut = days
+
+    // Keep in-month days; drop overflow (e.g. Nov 1 on an October sheet)
+    let daysOut = days
         .filter((d) => !ym || !d.date || d.date.startsWith(ym))
         .map(({ col, ...d }) => d);
+
+    // Pad leading days so a titled month (October) starts on the 1st even if the band starts mid-month
+    if (ym && daysOut.length && daysOut[0].dayNum > 1 && titleInfo.year != null && monthIdx != null) {
+        const lead = [];
+        for (let n = 1; n < daysOut[0].dayNum; n++) {
+            const d = new Date(Date.UTC(titleInfo.year, monthIdx, n));
+            const dow = d.getUTCDay();
+            lead.push({
+                date: d.toISOString().slice(0, 10),
+                dayNum: n,
+                dow: ['S', 'M', 'T', 'W', 'T', 'F', 'S'][dow],
+                weekend: dow === 0 || dow === 6,
+            });
+        }
+        daysOut = [...lead, ...daysOut];
+        for (const row of mergedRows) {
+            const leadCells = lead.map((d) => ({
+                text: 'O',
+                fill: '',
+                fontColor: '',
+                date: d.date,
+                sod: false,
+                leaveFill: false,
+            }));
+            row.cells = [...leadCells, ...row.cells.filter((c) => !ym || !c.date || c.date.startsWith(ym))];
+        }
+    } else {
+        for (const row of mergedRows) {
+            row.cells = row.cells.filter((c) => !ym || !c.date || c.date.startsWith(ym));
+        }
+    }
 
     return {
         title: titleInfo.title,
@@ -298,11 +359,66 @@ export async function parseXlsxRoster(buffer) {
         year: titleInfo.year,
         days: daysOut,
         legend: RADIOLOGY_LEGEND,
-        rows: staffRows.map((row) => ({
+        rows: mergedRows.map((row, i) => ({
             ...row,
-            cells: row.cells.filter((c) => !ym || !c.date || c.date.startsWith(ym)),
+            no: String(i + 1),
         })),
     };
+}
+
+function normalizeStaffName(name) {
+    return String(name || '')
+        .toUpperCase()
+        .replace(/\s*\.\s*/g, '. ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function cellPriority(text) {
+    const t = String(text || '').trim().toUpperCase();
+    if (!t || t === 'O' || t === 'OFF') return 1;
+    if (t === 'L' || t === 'LV') return 2;
+    return 3; // real duty codes win over leave/off when merging
+}
+
+function mergeStaffRowsByName(rows) {
+    const byName = new Map();
+    for (const row of rows) {
+        const key = normalizeStaffName(row.name);
+        const prev = byName.get(key);
+        if (!prev) {
+            byName.set(key, {
+                name: row.name,
+                rank: row.rank || '',
+                leaveType: row.leaveType || '',
+                cells: (row.cells || []).map((c) => ({ ...c })),
+            });
+            continue;
+        }
+        if (!prev.rank && row.rank) prev.rank = row.rank;
+        const nextCells = [];
+        const len = Math.max(prev.cells.length, row.cells.length);
+        for (let i = 0; i < len; i++) {
+            const a = prev.cells[i];
+            const b = row.cells[i];
+            if (!a) { nextCells.push({ ...b }); continue; }
+            if (!b) { nextCells.push({ ...a }); continue; }
+            const pick = cellPriority(b.text) >= cellPriority(a.text) ? b : a;
+            nextCells.push({
+                ...pick,
+                date: a.date || b.date,
+                leaveFill: /^L$/i.test(pick.text),
+            });
+        }
+        prev.cells = nextCells;
+        const leaveCells = nextCells.filter((c) => /^L$/i.test(c.text)).length;
+        if (leaveCells >= Math.max(3, Math.floor(nextCells.length / 2))) {
+            prev.leaveType = prev.leaveType || row.leaveType || 'Leave';
+        } else if (row.leaveType && !prev.leaveType) {
+            prev.leaveType = row.leaveType;
+        }
+    }
+    return [...byName.values()];
 }
 
 export { RADIOLOGY_LEGEND };

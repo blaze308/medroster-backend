@@ -88,30 +88,49 @@ export async function extractRosterPreview({ buffer, fileName }) {
                     codes: proposalProbe.codes.length,
                 });
             }
-            const out = withSetupProposal(stripInventedPii(refined));
+            const stripped = stripInventedPii(refined);
+            const out = withSetupProposal(stripped, {
+                kind,
+                fileName: fileName || '',
+                durationMs: Date.now() - t0,
+                path: needsRefine ? 'local+openai-refine' : 'local-only',
+                aiUsed: Boolean(refined?.aiUsed),
+                openai: refined?.openaiDebug || null,
+                skippedRefine: !needsRefine,
+            });
             logInfo('ROSTER_EXTRACT', 'Preview done (grid+AI refine)', {
                 kind,
                 durationMs: Date.now() - t0,
                 staff: out?.staff?.length || 0,
                 days: out?.days?.length || 0,
                 codes: out?.codes?.length || 0,
+                aiUsed: out?.extractDebug?.aiUsed,
             });
-            console.log(`[ROSTER_EXTRACT] done in ${Date.now() - t0}ms staff=${out?.staff?.length || 0}`);
+            console.log(`[ROSTER_EXTRACT] done in ${Date.now() - t0}ms staff=${out?.staff?.length || 0} ai=${out?.extractDebug?.aiUsed}`);
             return out;
         }
 
         if (kind === 'pdf' || kind === 'png' || kind === 'jpeg' || kind === 'webp') {
             const preview = await extractRosterWithOpenAI({ kind, buffer, fileName });
             if (!preview.staff?.length) throw new Error('No staff rows found in that roster');
-            const out = withSetupProposal(stripInventedPii(preview));
+            const stripped = stripInventedPii(preview);
+            const out = withSetupProposal(stripped, {
+                kind,
+                fileName: fileName || '',
+                durationMs: Date.now() - t0,
+                path: 'openai-vision',
+                aiUsed: true,
+                openai: preview?.openaiDebug || null,
+            });
             logInfo('ROSTER_EXTRACT', 'Preview done (vision/PDF)', {
                 kind,
                 durationMs: Date.now() - t0,
                 staff: out?.staff?.length || 0,
                 days: out?.days?.length || 0,
                 codes: out?.codes?.length || 0,
+                aiUsed: true,
             });
-            console.log(`[ROSTER_EXTRACT] done in ${Date.now() - t0}ms staff=${out?.staff?.length || 0}`);
+            console.log(`[ROSTER_EXTRACT] done in ${Date.now() - t0}ms staff=${out?.staff?.length || 0} ai=true`);
             return out;
         }
     } catch (err) {
@@ -123,8 +142,9 @@ export async function extractRosterPreview({ buffer, fileName }) {
     throw new Error('Upload a Word, Excel, PDF, or photo of the duty roster');
 }
 
-function withSetupProposal(preview) {
+function withSetupProposal(preview, extractDebug = null) {
     const proposal = buildSetupProposal(preview, null);
+    const needingConfirm = (proposal.codes || []).filter((c) => c.needsConfirm || !c.meaning);
     return {
         ...preview,
         codes: proposal.codes,
@@ -132,5 +152,14 @@ function withSetupProposal(preview) {
         roleGuesses: proposal.roleGuesses,
         blanks: proposal.blanks,
         needsFullSetup: proposal.needsFullSetup,
+        aiUsed: Boolean(extractDebug?.aiUsed ?? preview?.aiUsed),
+        extractDebug: {
+            ...(extractDebug || {}),
+            staffCount: preview?.staff?.length || 0,
+            dayCount: preview?.days?.length || 0,
+            codeCount: proposal.codes?.length || 0,
+            needingConfirm: needingConfirm.map((c) => c.label),
+            needingConfirmCount: needingConfirm.length,
+        },
     };
 }

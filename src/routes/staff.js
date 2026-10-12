@@ -254,7 +254,8 @@ router.post('/extract', requireAuth, requireHospital, requireWriteAccess, async 
             if (wardSnap.exists) savedSetup = wardSnap.data()?.rosterSetup || null;
         }
         const proposal = buildSetupProposal(preview, savedSetup);
-        console.log(`[STAFF_API] POST extract OK in ${Date.now() - t0}ms staff=${preview.staff.length} codes=${proposal.codes.length}`);
+        const requestMs = Date.now() - t0;
+        console.log(`[STAFF_API] POST extract OK in ${requestMs}ms staff=${preview.staff.length} codes=${proposal.codes.length}`);
         return res.json({
             ...preview,
             codes: proposal.codes,
@@ -264,6 +265,12 @@ router.post('/extract', requireAuth, requireHospital, requireWriteAccess, async 
             needsFullSetup: proposal.needsFullSetup,
             savedSetup: proposal.savedSetup,
             source: preview.source || 'roster',
+            requestMs,
+            extractDebug: {
+                ...(preview.extractDebug || {}),
+                requestMs,
+                route: 'hospital',
+            },
         });
     } catch (err) {
         console.error(`[STAFF_API] POST extract FAIL in ${Date.now() - t0}ms`, err.message);
@@ -286,7 +293,7 @@ router.post('/remap-roster', requireAuth, requireHospital, requireWriteAccess, a
 });
 
 function shiftFromCode(shiftTypes, code) {
-    const map = { M: 'Morning', A: 'Afternoon', N: 'Night', SOD: 'SOD' };
+    const map = { M: 'Morning', A: 'Afternoon', N: 'Night', SOD: 'SOD', OFC: 'Office', OFFICE: 'Office' };
     const name = map[String(code || '').toUpperCase()];
     if (!name) return null;
     return (shiftTypes || []).find((st) => st.name === name || st.id === name.toLowerCase()) || null;

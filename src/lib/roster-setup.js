@@ -1,14 +1,18 @@
 /** Build ward roster setup proposals + remap without calling OpenAI. */
 
-export const LEGEND_MEANINGS = [
-    'Morning',
-    'Afternoon',
-    'Night',
-    'SOD',
-    'Off',
-    'Holiday',
-    'Leave',
+/** All MedRoster cell meanings — keep in sync with applyRosterSetup / codeLetter. */
+export const LEGEND_MEANING_OPTIONS = [
+    { value: 'Morning', label: 'Morning', hint: 'Day shift · M, XM, D', group: 'On duty' },
+    { value: 'Afternoon', label: 'Afternoon', hint: 'A, XA, E', group: 'On duty' },
+    { value: 'Night', label: 'Night', hint: 'N, XN, N12', group: 'On duty' },
+    { value: 'SOD', label: 'SOD', hint: 'Supervisor on Duty', group: 'On duty' },
+    { value: 'Office', label: 'Office', hint: '08:00–14:00 (6h) · P / Polyclinic / office hours', group: 'On duty' },
+    { value: 'Off', label: 'Off', hint: 'O, D/O, OFF', group: 'Not on duty' },
+    { value: 'Holiday', label: 'Holiday', hint: 'H, H/O, PH', group: 'Not on duty' },
+    { value: 'Leave', label: 'Leave', hint: 'L, LV, annual / maternity', group: 'Not on duty' },
 ];
+
+export const LEGEND_MEANINGS = LEGEND_MEANING_OPTIONS.map((o) => o.value);
 
 const KNOWN_LABEL_MEANING = {
     M: 'Morning',
@@ -19,6 +23,8 @@ const KNOWN_LABEL_MEANING = {
     L: 'Leave',
     LV: 'Leave',
     SOD: 'SOD',
+    OFC: 'Office',
+    OFFICE: 'Office',
     XM: 'Morning',
     XA: 'Afternoon',
     XN: 'Night',
@@ -26,7 +32,7 @@ const KNOWN_LABEL_MEANING = {
     PA: 'Afternoon',
     PN: 'Night',
     OFF: 'Off',
-    P: '', // often Polyclinic unit — needs confirm
+    P: '', // Polyclinic / office hours — soft-suggest Office
 };
 
 function normalizeLabel(raw) {
@@ -40,6 +46,7 @@ function codeLetter(meaning) {
     if (meaning === 'Off') return 'O';
     if (meaning === 'Holiday') return 'H';
     if (meaning === 'SOD') return 'SOD';
+    if (meaning === 'Office') return 'OFC';
     if (meaning === 'Leave') return 'LV';
     return '';
 }
@@ -95,9 +102,20 @@ export function buildSetupProposal(preview, savedSetup = null) {
                 || fromFile?.meaning
                 || KNOWN_LABEL_MEANING[label];
             if (meaning === undefined) meaning = '';
-            const unit = saved?.unit || fromFile?.unit || unitFromLabel(label) || '';
+            let unit = saved?.unit || fromFile?.unit || unitFromLabel(label) || '';
+            // File legends sometimes put unit text in "meaning" (e.g. P → Polyclinic X-ray)
+            if (meaning && !LEGEND_MEANINGS.includes(meaning)) {
+                if (!unit) unit = meaning;
+                meaning = KNOWN_LABEL_MEANING[label] || '';
+            }
+            // Polyclinic / office-hours codes — soft-suggest Office (08:00–14:00), not ward Morning
+            if (!meaning && unit && (/polyclinic/i.test(unit) || label === 'P')) {
+                meaning = 'Office';
+            }
             const confidence = confidenceFor(label, meaning, Boolean(saved));
-            const needsConfirm = confidence !== 'high' || !meaning;
+            // Always confirm when we only guessed from a unit / office tag
+            const needsConfirm = confidence !== 'high' || !meaning
+                || ((/polyclinic/i.test(unit) || meaning === 'Office') && !saved && label === 'P');
             return {
                 label,
                 count,
@@ -205,7 +223,7 @@ export function applyRosterSetup(preview, setup = {}) {
                 meaning: onLeave && (!meaning || meaning === 'Leave') ? 'Leave' : meaning,
             };
             cells.push(next);
-            if (['Morning', 'Afternoon', 'Night', 'SOD'].includes(next.meaning)) {
+            if (['Morning', 'Afternoon', 'Night', 'SOD', 'Office'].includes(next.meaning)) {
                 assignments.push({
                     date: cell.date,
                     code: next.code,
@@ -219,7 +237,11 @@ export function applyRosterSetup(preview, setup = {}) {
             key,
             wardRole,
             leaveType,
-            leaveNote: leaveType ? `${leaveType} leave` : (s.leaveNote || ''),
+            leaveNote: leaveType
+                ? (/leave$/i.test(String(leaveType).trim())
+                    ? String(leaveType).trim().replace(/^\w/, (c) => c.toUpperCase())
+                    : `${String(leaveType).charAt(0).toUpperCase()}${String(leaveType).slice(1)} leave`)
+                : (s.leaveNote || ''),
             cells,
             assignments,
             selected: s.selected !== false,

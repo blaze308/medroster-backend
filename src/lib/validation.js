@@ -191,7 +191,8 @@ export function validateWorkRestriction(staff, date, shiftType, schedule) {
 
 /**
  * Ghana guideline: prefer ≥N senior / in-charge on Morning, Afternoon, Night.
- * SOD counts toward day-side (Morning + Afternoon). Always soft — never blocks.
+ * SOD counts toward day-side (Morning + Afternoon). Office counts with Morning.
+ * Always soft — never blocks.
  * Returns { warnings: [{ shift, message, missingCount }] }.
  */
 export function validateSupervisoryCoverage({ date, assignments, staffById, settings }) {
@@ -209,6 +210,7 @@ export function validateSupervisoryCoverage({ date, assignments, staffById, sett
             if (name === shift) return true;
             // SOD covers day-side supervisory presence
             if ((shift === 'Morning' || shift === 'Afternoon') && name === 'SOD') return true;
+            if (shift === 'Morning' && name === 'Office') return true;
             return false;
         });
 

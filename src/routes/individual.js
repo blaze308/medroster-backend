@@ -175,8 +175,19 @@ router.post('/staff/extract', requireAuth, async (req, res) => {
         const preview = await extractRosterPreview({ buffer: buf, fileName });
         if (!preview.staff?.length) return res.status(400).json({ error: 'No staff rows found in that roster' });
         const staff = (preview.staff || []).slice(0, limits.maxStaff);
-        console.log(`[INDIVIDUAL_API] POST extract OK in ${Date.now() - t0}ms staff=${staff.length}`);
-        return res.json({ ...preview, staff, source: preview.source || 'roster' });
+        const requestMs = Date.now() - t0;
+        console.log(`[INDIVIDUAL_API] POST extract OK in ${requestMs}ms staff=${staff.length}`);
+        return res.json({
+            ...preview,
+            staff,
+            source: preview.source || 'roster',
+            requestMs,
+            extractDebug: {
+                ...(preview.extractDebug || {}),
+                requestMs,
+                route: 'individual',
+            },
+        });
     } catch (err) {
         console.error(`[INDIVIDUAL_API] POST extract FAIL in ${Date.now() - t0}ms`, err.message);
         logError('INDIVIDUAL_API', 'Roster extract failed', err);

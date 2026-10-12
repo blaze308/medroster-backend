@@ -1,4 +1,4 @@
-import { expandRank, splitFullName } from './rank-abbr.js';
+import { expandRank, splitFullName, splitNameAndRank } from './rank-abbr.js';
 import { logInfo, logError } from './logger.js';
 
 function summarizeOpenAiPayload(data) {
@@ -48,6 +48,8 @@ const SHIFT_ALIASES = {
     HO: 'Holiday',
     PH: 'Holiday',
     SOD: 'SOD',
+    OFC: 'Office',
+    OFFICE: 'Office',
     LV: 'Leave',
     AL: 'Leave',
     SL: 'Leave',
@@ -95,14 +97,16 @@ function codeLetter(meaning) {
     if (meaning === 'Off') return 'O';
     if (meaning === 'Holiday') return 'H';
     if (meaning === 'SOD') return 'SOD';
+    if (meaning === 'Office') return 'OFC';
     if (meaning === 'Leave') return 'LV';
     return '';
 }
 
 export function interpretRosterGrid(parsed) {
     const staff = parsed.rows.map((row) => {
-        const names = splitFullName(row.name);
-        const ranks = expandRank(row.rank);
+        const split = splitNameAndRank(row.name);
+        const names = splitFullName(split.name || row.name);
+        const ranks = expandRank(row.rank || split.rank);
         const leaveType = row.leaveType || '';
         const joinedLetters = (row.cells || []).map((c) => c.text).join('').replace(/[^A-Za-z]/g, '').toUpperCase();
         const fullLeaveRow = Boolean(leaveType) && /MATERNITYLEAVE|STUDYLEAVE/.test(joinedLetters);
@@ -113,7 +117,7 @@ export function interpretRosterGrid(parsed) {
             if (!cell.date) continue;
             const meaning = normalizeCellCode(cell.text, parsed.legend);
             const compact = String(cell.text || '').toUpperCase().replace(/\s+/g, '');
-            const exactDuty = /^(XM|XA|XN|PM|PA|PN|SOD|D\/O|N\/O|H\/O|OFF)$/i.test(compact)
+            const exactDuty = /^(XM|XA|XN|PM|PA|PN|SOD|OFC|OFFICE|D\/O|N\/O|H\/O|OFF)$/i.test(compact)
                 || /^[MANOH]$/i.test(compact);
             if (fullLeaveRow || (leaveType && !exactDuty && compact !== 'L')) {
                 cells.push({ date: cell.date, code: 'LV', sod: false, text: cell.text, unit: unitFromCellText(cell.text) });
@@ -123,18 +127,18 @@ export function interpretRosterGrid(parsed) {
             const sod = Boolean(cell.sod) || meaning === 'SOD';
             const unit = unitFromCellText(cell.text);
             cells.push({ date: cell.date, code, sod, text: cell.text, unit });
-            if (meaning === 'Morning' || meaning === 'Afternoon' || meaning === 'Night' || meaning === 'SOD') {
+            if (meaning === 'Morning' || meaning === 'Afternoon' || meaning === 'Night' || meaning === 'SOD' || meaning === 'Office') {
                 assignments.push({ date: cell.date, code: codeLetter(meaning === 'SOD' ? 'SOD' : meaning), sod });
             }
         }
 
         return {
             no: row.no,
-            fullName: row.name,
+            fullName: `${names.firstName} ${names.lastName}`.trim() || row.name,
             firstName: names.firstName,
             lastName: names.lastName,
             rankAbbr: ranks.rankAbbr,
-            rankFull: ranks.rankFull || row.rank,
+            rankFull: ranks.rankFull || row.rank || split.rank || '',
             selected: true,
             wardRole: ranks.rankAbbr === 'AMPS' || ranks.rankAbbr === 'PMO' || ranks.rankAbbr === 'PNO' ? 'incharge' : 'regular',
             leaveType,
@@ -206,11 +210,11 @@ function ghanaLegendPrompt() {
 - DAY SUP is morning + supervisor
 - Leave spelled across cells (MATERNITY LEAVE, PART LEAVE, STUDY LEAVE) is a leave note, not M/A/N
 - Aliases: D/O N/O H/O = off/holiday; E = afternoon; Day (not D/O) = morning
-- Radiology (Cape Coast and similar): M/A/N are shifts. X means General X-ray (unit prefix). P means Polyclinic X-ray unit (NOT afternoon). XM/XA/XN = that shift at General X-ray. PM/PA/PN or bare P = Polyclinic X-ray. L = leave. O = off.
+- Radiology (Cape Coast and similar): M/A/N are shifts. X means General X-ray (unit prefix). P means Polyclinic / office hours (NOT afternoon) — map as Office (OFC, ~08:00–14:00) with unit Polyclinic X-ray. XM/XA/XN = ward shift at General X-ray. L = leave. O = off.
 - Expand GHS rank codes (SSM=Senior Staff Midwife, AMPS, SMO, MO, SM, SSN, RM, PMO, PNO, SNO, NO, DCNO, DNMS)
 - Never output Ghana Card, staff ID, or license numbers
 - Title-case names; first token is firstName, remainder lastName
-- Cell code in JSON must be M A N O H LV SOD or empty. Put unit on "unit" (General X-ray / Polyclinic X-ray / empty). Keep original letters in "text".
+- Cell code in JSON must be M A N O H LV SOD OFC or empty. Put unit on "unit" (General X-ray / Polyclinic X-ray / empty). Keep original letters in "text".
 - If a rank, unit letter, or shift slang is unknown, use web search with Ghana health keywords (Ghana Health Service, GHS, duty roster, plus the token). Prefer GHS / MoH / teaching-hospital pages. At most a few searches. If still unknown, leave code empty and keep the raw text for human review — do not invent a meaning.`;
 }
 
@@ -509,17 +513,30 @@ export async function refineExtractWithOpenAI(parsed, interpreted) {
             });
         }
         const merged = mergeAiExtract(interpreted, parsedAi);
+        const durationMs = Date.now() - t0;
         logInfo('OPENAI', 'Refine extract done', {
-            durationMs: Date.now() - t0,
+            durationMs,
             staffOut: merged?.staff?.length || 0,
             ...logCtx,
         });
-        console.log(`[OPENAI] refine done in ${Date.now() - t0}ms staff=${merged?.staff?.length || 0}`);
-        return merged;
+        console.log(`[OPENAI] refine done in ${durationMs}ms staff=${merged?.staff?.length || 0}`);
+        return {
+            ...merged,
+            openaiDebug: {
+                stage: 'refine',
+                durationMs,
+                model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+                staffOut: merged?.staff?.length || 0,
+            },
+        };
     } catch (err) {
         logError('OPENAI', 'Refine extract skipped', err);
         console.warn('[OPENAI] refine skipped', err.message);
-        return interpreted;
+        return {
+            ...interpreted,
+            aiUsed: false,
+            openaiDebug: { stage: 'refine', skipped: true, error: err.message },
+        };
     }
 }
 
@@ -678,7 +695,18 @@ Return JSON only. year must be a 4-digit number. days[].date is YYYY-MM-DD.`;
         })),
     };
     const interpreted = interpretRosterGrid(dummyParsed);
-    return mergeAiExtract(interpreted, parsedAi);
+    const merged = mergeAiExtract(interpreted, parsedAi);
+    return {
+        ...merged,
+        openaiDebug: {
+            stage: 'vision_extract',
+            kind,
+            fileName: fileName || '',
+            durationMs: Date.now() - t0,
+            model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+            staffOut: merged?.staff?.length || 0,
+        },
+    };
 }
 
 function mergeAiExtract(base, ai) {
@@ -703,7 +731,10 @@ function mergeAiExtract(base, ai) {
             lastName: extra.lastName || row.lastName,
             fullName: `${extra.firstName || row.firstName} ${extra.lastName || row.lastName}`.trim(),
             rankAbbr: extra.rankAbbr || row.rankAbbr,
-            rankFull: extra.rankFull || row.rankFull,
+            // Prefer any non-empty rank from AI or local parse; expand abbrs like SSN → Senior Staff Nurse
+            rankFull: expandRank(
+                extra.rankFull || row.rankFull || extra.rankAbbr || row.rankAbbr || ''
+            ).rankFull || extra.rankFull || row.rankFull || '',
             leaveType,
             leaveNote: extra.leaveNote || row.leaveNote,
             wardRole: extra.wardRole === 'incharge' || extra.wardRole === 'assistant' ? extra.wardRole : row.wardRole,
