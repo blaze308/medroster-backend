@@ -1,7 +1,8 @@
 name: Deploy Backend to Vercel
 
 # Production deploys on push to main via Vercel Git (dashboard).
-# This workflow is a manual backup; it needs secrets.VERCEL_TOKEN.
+# This workflow is a manual backup; it needs repository secrets:
+#   VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID
 on:
   workflow_dispatch:
 
@@ -12,6 +13,24 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Require Vercel secrets
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          missing=
+          [ -z "$VERCEL_TOKEN" ] && missing="${missing} VERCEL_TOKEN"
+          [ -z "$VERCEL_ORG_ID" ] && missing="${missing} VERCEL_ORG_ID"
+          [ -z "$VERCEL_PROJECT_ID" ] && missing="${missing} VERCEL_PROJECT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing GitHub Actions secret(s):$missing"
+            echo "Add them under Settings → Secrets and variables → Actions."
+            echo "Create a token at https://vercel.com/account/tokens"
+            echo "Find org/project IDs with: vercel link && cat .vercel/project.json"
+            exit 1
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4

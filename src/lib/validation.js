@@ -1,4 +1,12 @@
 import { isStaffOnLeave, classifyStaffType, staffDisplayName, getStaffById } from './staff-utils.js';
+import { severityForRule } from './rule-modes.js';
+
+function pushGuideline(errors, warnings, issue, settings, modeKey) {
+    const severity = severityForRule(settings, modeKey);
+    const item = { ...issue, severity };
+    if (severity === 'error') errors.push(item);
+    else warnings.push(item);
+}
 
 function resolveStaffType(staff) {
     return staff?.staffType || classifyStaffType(staff?.rank);
@@ -360,6 +368,9 @@ export function validateConsecutiveShifts({ staffId, date, assignments, settings
     const checkDate = new Date(date);
     checkDate.setHours(0, 0, 0, 0);
 
+    let dayWarning = null;
+    let nightWarning = null;
+
     let consecutive = 1;
     let cur = new Date(checkDate);
     cur.setDate(cur.getDate() - 1);
@@ -369,7 +380,7 @@ export function validateConsecutiveShifts({ staffId, date, assignments, settings
         consecutive++;
         cur.setDate(cur.getDate() - 1);
     }
-    if (consecutive > maxDays) return { valid: true, warning: `${consecutive} consecutive days of work` };
+    if (consecutive > maxDays) dayWarning = `${consecutive} consecutive days of work`;
 
     const today = own.find((a) => dateKey(a.date) === dateKey(checkDate));
     if (today?.shiftType?.name === 'Night') {
@@ -382,9 +393,16 @@ export function validateConsecutiveShifts({ staffId, date, assignments, settings
             nights++;
             nd.setDate(nd.getDate() - 1);
         }
-        if (nights > maxNights) return { valid: true, warning: `${nights} consecutive night shifts; fourth nights should only be used with caution` };
+        if (nights > maxNights) {
+            nightWarning = `${nights} consecutive night shifts; fourth nights should only be used with caution`;
+        }
     }
-    return { valid: true };
+    return {
+        valid: true,
+        dayWarning,
+        nightWarning,
+        warning: dayWarning || nightWarning || undefined,
+    };
 }
 
 export function validateAssignment({ staff, date, shiftType, context }) {
@@ -394,7 +412,6 @@ export function validateAssignment({ staff, date, shiftType, context }) {
     if (!shiftType) return { valid: false, errors: ['Shift type not found'], warnings: [] };
 
     const settings = context?.settings || {};
-    const rules = settings.validationRules || {};
     const assignments = context?.assignments || [];
     const schedule = context?.schedule;
 
@@ -405,9 +422,14 @@ export function validateAssignment({ staff, date, shiftType, context }) {
     const restriction = validateWorkRestriction(staff, date, shiftType, schedule);
     if (!restriction.valid) errors.push(restriction.error);
 
-    if (rules.warnConsecutiveShifts !== false) {
-        const r = validateConsecutiveShifts({ staffId: staff._id || staff.id, date, assignments, settings });
-        if (r.warning) warnings.push(r.warning);
+    const r = validateConsecutiveShifts({ staffId: staff._id || staff.id, date, assignments, settings });
+    if (r.dayWarning) {
+        if (severityForRule(settings, 'consecutiveDays') === 'error') errors.push(r.dayWarning);
+        else warnings.push(r.dayWarning);
+    }
+    if (r.nightWarning) {
+        if (severityForRule(settings, 'consecutiveNights') === 'error') errors.push(r.nightWarning);
+        else warnings.push(r.nightWarning);
     }
     const provisional = [...assignments, { staffId: staff._id || staff.id, date, shiftType }];
     const hoursCheck = validateMaxHoursPerWeek({
@@ -416,10 +438,16 @@ export function validateAssignment({ staff, date, shiftType, context }) {
         settings,
         schedule,
     });
-    if (hoursCheck.warning) warnings.push(hoursCheck.warning);
+    if (hoursCheck.warning) {
+        if (severityForRule(settings, 'weeklyHours') === 'error') errors.push(hoursCheck.warning);
+        else warnings.push(hoursCheck.warning);
+    }
 
     const dailyRest = validateDailyRest({ staffId: staff._id || staff.id, assignments: provisional });
-    if (dailyRest.warning) warnings.push(dailyRest.warning);
+    if (dailyRest.warning) {
+        if (severityForRule(settings, 'dailyRest') === 'error') errors.push(dailyRest.warning);
+        else warnings.push(dailyRest.warning);
+    }
 
     return { valid: errors.length === 0, errors, warnings };
 }
@@ -435,13 +463,12 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
         const date = new Date(dateStr);
         const coverage = validateSupervisoryCoverage({ date, assignments, staffById, settings });
         for (const w of coverage.warnings || []) {
-            warnings.push({
+            pushGuideline(errors, warnings, {
                 type: 'supervisory_coverage',
                 date: dateStr,
                 shift: w.shift,
                 message: w.message,
-                severity: 'warning',
-            });
+            }, settings, 'seniorCoverage');
             if (!dateViolations[dateStr]) dateViolations[dateStr] = [];
             if (!dateViolations[dateStr].includes('missing_supervisor')) {
                 dateViolations[dateStr].push('missing_supervisor');
@@ -460,6 +487,31 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
                 if (!role.valid) errors.push({ type: 'role_shift_incompatible', date: dateStr, staffId: String(sm._id || sm.id), staffName: staffDisplayName(sm), message: role.error, severity: 'error' });
                 const restriction = validateWorkRestriction(sm, date, a.shiftType, schedule);
                 if (!restriction.valid) errors.push({ type: 'work_restriction', date: dateStr, staffId: String(sm._id || sm.id), staffName: staffDisplayName(sm), message: restriction.error, severity: 'error' });
+
+                const consec = validateConsecutiveShifts({
+                    staffId: sm._id || sm.id,
+                    date,
+                    assignments,
+                    settings,
+                });
+                if (consec.dayWarning) {
+                    pushGuideline(errors, warnings, {
+                        type: 'consecutive_days',
+                        date: dateStr,
+                        staffId: String(sm._id || sm.id),
+                        staffName: staffDisplayName(sm),
+                        message: consec.dayWarning,
+                    }, settings, 'consecutiveDays');
+                }
+                if (consec.nightWarning) {
+                    pushGuideline(errors, warnings, {
+                        type: 'consecutive_nights',
+                        date: dateStr,
+                        staffId: String(sm._id || sm.id),
+                        staffName: staffDisplayName(sm),
+                        message: consec.nightWarning,
+                    }, settings, 'consecutiveNights');
+                }
             }
         });
     });
@@ -470,16 +522,33 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
         if (!own.length) return;
 
         const r = validateMaxHoursPerWeek({ staffId: id, assignments, settings, schedule });
-        if (r.warning) warnings.push({ type: 'max_hours', staffId: id, staffName: staffDisplayName(sm), message: r.warning, severity: 'warning' });
+        if (r.warning) {
+            pushGuideline(errors, warnings, {
+                type: 'max_hours',
+                staffId: id,
+                staffName: staffDisplayName(sm),
+                message: r.warning,
+            }, settings, 'weeklyHours');
+        }
 
         const dailyRest = validateDailyRest({ staffId: id, assignments: own });
         if (dailyRest.warning) {
-            warnings.push({ type: 'daily_rest', staffId: id, staffName: staffDisplayName(sm), message: dailyRest.warning, severity: 'warning' });
+            pushGuideline(errors, warnings, {
+                type: 'daily_rest',
+                staffId: id,
+                staffName: staffDisplayName(sm),
+                message: dailyRest.warning,
+            }, settings, 'dailyRest');
         }
 
         const weeklyRest = validateWeeklyRest({ staffId: id, assignments: own, schedule });
         if (weeklyRest.warning) {
-            warnings.push({ type: 'weekly_rest', staffId: id, staffName: staffDisplayName(sm), message: weeklyRest.warning, severity: 'warning' });
+            pushGuideline(errors, warnings, {
+                type: 'weekly_rest',
+                staffId: id,
+                staffName: staffDisplayName(sm),
+                message: weeklyRest.warning,
+            }, settings, 'weeklyRest');
         }
 
         if (schedule?.startDate && schedule?.endDate && sm.wardRole === 'regular') {
@@ -490,12 +559,17 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
             const workedDays = new Set(own.map((a) => dateKey(a.date))).size;
             const offDays = totalDays - workedDays;
             if (offDays < targetOffDays) {
-                warnings.push({ type: 'off_day_target', staffId: id, staffName: staffDisplayName(sm), message: `${offDays} off days in this cycle (target: ${targetOffDays})`, severity: 'warning' });
+                pushGuideline(errors, warnings, {
+                    type: 'off_day_target',
+                    staffId: id,
+                    staffName: staffDisplayName(sm),
+                    message: `${offDays} off days in this cycle (target: ${targetOffDays})`,
+                }, settings, 'offDayTarget');
             }
         }
     });
 
-    const coverageWarnings = warnings.filter((e) => e.type === 'supervisory_coverage');
+    const coverageIssues = [...errors, ...warnings].filter((e) => e.type === 'supervisory_coverage');
 
     return {
         valid: errors.length === 0,
@@ -507,7 +581,7 @@ export function validateFullSchedule({ staff, assignments, settings, schedule })
             totalWarnings: warnings.length,
             leaveConflicts: errors.filter((e) => e.type === 'leave_conflict').length,
             roleViolations: errors.filter((e) => e.type === 'role_shift_incompatible').length,
-            coverageIssues: coverageWarnings.length,
+            coverageIssues: coverageIssues.length,
             restrictionViolations: errors.filter((e) => e.type === 'work_restriction').length,
         },
     };

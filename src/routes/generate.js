@@ -8,6 +8,7 @@ import {
     shiftDurationHours,
     shiftsOverlap,
 } from '../lib/validation.js';
+import { isRuleHard, normalizeRuleModes } from '../lib/rule-modes.js';
 import { logAutoGeneration, logError } from '../lib/logger.js';
 
 const router = Router({ mergeParams: true });
@@ -113,6 +114,7 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
         const baseSettings = hospitalData.settings || {};
         const settings = {
             ...baseSettings,
+            ruleModes: normalizeRuleModes(baseSettings.ruleModes),
             minSeniorStaffPerShift:
                 wardGuidelines.minSeniorPerShift ??
                 baseSettings.minSeniorStaffPerShift ??
@@ -123,6 +125,11 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
         const maxConsecutive = settings.maxConsecutiveDays ?? 6;
         const maxNights = settings.maxConsecutiveNights ?? 3;
         const maxHoursPerWeek = settings.maxHoursPerWeek ?? 48;
+        const hardenDays = isRuleHard(settings, 'consecutiveDays');
+        const hardenNights = isRuleHard(settings, 'consecutiveNights');
+        const hardenHours = isRuleHard(settings, 'weeklyHours');
+        const hardenOffDays = isRuleHard(settings, 'offDayTarget');
+        const hardenSenior = isRuleHard(settings, 'seniorCoverage');
 
         const days = buildCycleDays(schedule);
         const holidays = holidaySet(schedule);
@@ -190,16 +197,20 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
                     const sid = s._id;
                     if (assignedToday.has(sid)) return false;
                     if (!canWorkShift(s, day, shift, holidays)) return false;
-                    if ((consecutiveTracker.get(sid) || 0) >= maxConsecutive) return false;
-                    if ((assignmentCounts.get(sid) || 0) >= (maxWorkDaysByStaff.get(sid) ?? days.length)) return false;
-                    if (isNight && (consecutiveNightTracker.get(sid) || 0) >= maxNights) return false;
-                    const weekHours = hoursForStaffInWeekContaining({
-                        assignments: created,
-                        staffId: sid,
-                        date: day,
-                        scheduleStart,
-                    });
-                    if (weekHours + shiftHours > maxHoursPerWeek) return false;
+                    if (hardenDays && (consecutiveTracker.get(sid) || 0) >= maxConsecutive) return false;
+                    if (hardenOffDays && (assignmentCounts.get(sid) || 0) >= (maxWorkDaysByStaff.get(sid) ?? days.length)) {
+                        return false;
+                    }
+                    if (hardenNights && isNight && (consecutiveNightTracker.get(sid) || 0) >= maxNights) return false;
+                    if (hardenHours) {
+                        const weekHours = hoursForStaffInWeekContaining({
+                            assignments: created,
+                            staffId: sid,
+                            date: day,
+                            scheduleStart,
+                        });
+                        if (weekHours + shiftHours > maxHoursPerWeek) return false;
+                    }
                     return true;
                 });
 
@@ -208,8 +219,14 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
                 pool.sort((a, b) => {
                     const roleA = a.wardRole === 'incharge' || a.wardRole === 'assistant' ? -1 : 0;
                     const roleB = b.wardRole === 'incharge' || b.wardRole === 'assistant' ? -1 : 0;
+                    // Soft prefer: fewer consecutive / hours when not hardened
+                    const softConsec =
+                        !hardenDays
+                            ? (consecutiveTracker.get(a._id) || 0) - (consecutiveTracker.get(b._id) || 0)
+                            : 0;
                     return (
                         roleA - roleB ||
+                        softConsec ||
                         preferenceScore(a, day, shift, usePreferences) - preferenceScore(b, day, shift, usePreferences) ||
                         (assignmentCounts.get(a._id) || 0) - (assignmentCounts.get(b._id) || 0)
                     );
@@ -222,6 +239,9 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
                     if (have < minSenior) {
                         const seniorPick = pool.find((s) => seniorIds.has(s._id));
                         if (seniorPick) pick = seniorPick;
+                        else if (hardenSenior) {
+                            // No eligible senior in pool — still assign (shortage); validation will error.
+                        }
                     }
                 }
 

@@ -390,8 +390,10 @@ router.post('/:schedId/validate', requireAuth, requireHospital, async (req, res)
             if (wardSnap.exists) wardGuidelines = wardSnap.data()?.guidelines || {};
         }
         const baseSettings = hospitalData.settings || {};
+        const { normalizeRuleModes } = await import('../lib/rule-modes.js');
         const mergedSettings = {
             ...baseSettings,
+            ruleModes: normalizeRuleModes(baseSettings.ruleModes),
             minSeniorStaffPerShift:
                 wardGuidelines.minSeniorPerShift ??
                 baseSettings.minSeniorStaffPerShift ??

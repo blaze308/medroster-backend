@@ -33,7 +33,7 @@ npx vercel --prod --yes --scope "dev-studio-jay" --project medroster-backend
 
 Repo [`dev-studio-jay/MedRoster-Backend-API`](https://github.com/dev-studio-jay/MedRoster-Backend-API) is connected to Vercel project `medroster-backend`.
 
-- Push to **`main`** → production [https://medroster-backend.vercel.app](https://medroster-backend.vercel.app)
+- Push to **`main`** (via Vercel Git integration) → production [https://medroster-backend.vercel.app](https://medroster-backend.vercel.app)
 - Other branches → preview deployments
 
 Optional GitHub Actions backup: [`.github/workflows/deploy-backend.yml`](.github/workflows/deploy-backend.yml) (`workflow_dispatch`). Needs `VERCEL_TOKEN` from [Vercel account tokens](https://vercel.com/account/tokens), plus `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`.

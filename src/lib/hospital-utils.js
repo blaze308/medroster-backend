@@ -2,6 +2,7 @@
 
 import { db } from '../config/firebase.js';
 import { generateHospitalCode, joinCodeKey, normalizeJoinCode } from './hospital-code.js';
+import { getDefaultRuleModes } from './rule-modes.js';
 
 export function defaultHospitalDoc({ hospitalName, hospitalType, hospitalRegion, hospitalLocation, now, joinCode }) {
     const code = joinCode || generateHospitalCode();
@@ -27,6 +28,7 @@ export function defaultHospitalDoc({ hospitalName, hospitalType, hospitalRegion,
             minSeniorStaffPerShift: 1,
             supervisoryCoverageSeverity: 'warning',
             maxHoursPerWeek: 48,
+            ruleModes: getDefaultRuleModes(),
             validationRules: {
                 enforceLeaveConflicts: true,
                 enforceRoleShiftRestrictions: true,

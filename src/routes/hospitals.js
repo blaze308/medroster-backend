@@ -121,18 +121,29 @@ router.patch('/:id', requireAuth, requireHospital, requireWriteAccess, async (re
         for (const key of allowed) {
             if (req.body[key] !== undefined) update[key] = req.body[key];
         }
+        const ref = db.doc(`hospitals/${hospitalId}`);
+        const snap = await ref.get();
+        if (!snap.exists) return res.status(404).json({ error: 'Hospital not found' });
+
         if (update.settings && typeof update.settings === 'object') {
+            const existing = snap.data()?.settings || {};
             const incoming = update.settings;
-            const vr = incoming.validationRules || {};
+            const merged = { ...existing, ...incoming };
+            const vr = {
+                ...(existing.validationRules || {}),
+                ...(incoming.validationRules || {}),
+            };
             const minSenior = Math.max(
                 0,
-                incoming.minSeniorStaffPerShift ?? incoming.minSeniorStaffPerDay ?? 1
+                merged.minSeniorStaffPerShift ?? merged.minSeniorStaffPerDay ?? 1
             );
+            const { normalizeRuleModes } = await import('../lib/rule-modes.js');
             update.settings = {
-                ...incoming,
+                ...merged,
                 minSeniorStaffPerDay: minSenior,
                 minSeniorStaffPerShift: minSenior,
-                supervisoryCoverageSeverity: incoming.supervisoryCoverageSeverity || 'warning',
+                supervisoryCoverageSeverity: merged.supervisoryCoverageSeverity || 'warning',
+                ruleModes: normalizeRuleModes(merged.ruleModes),
                 validationRules: {
                     ...vr,
                     enforceLeaveConflicts: true,
@@ -141,10 +152,6 @@ router.patch('/:id', requireAuth, requireHospital, requireWriteAccess, async (re
                 },
             };
         }
-
-        const ref = db.doc(`hospitals/${hospitalId}`);
-        const snap = await ref.get();
-        if (!snap.exists) return res.status(404).json({ error: 'Hospital not found' });
 
         await ref.update(update);
         const updated = await ref.get();
