@@ -322,6 +322,7 @@ async function upsertSlimStaff({ hospitalId, departmentId, wardId, row, now }) {
         maternityNoNight: Boolean(row.maternityNoNight) || /maternity/i.test(row.leaveType || ''),
         preferredOffDays: Array.isArray(row.preferredOffDays) ? row.preferredOffDays : [],
         preferredShifts: Array.isArray(row.preferredShifts) ? row.preferredShifts : [],
+        isRotation: Boolean(row.isRotation),
         notes: row.notes || row.leaveNote || '',
         updatedAt: now,
     };

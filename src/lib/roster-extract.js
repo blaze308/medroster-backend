@@ -154,6 +154,7 @@ export function interpretRosterGrid(parsed) {
             rankFull: ranks.rankFull || row.rank || split.rank || '',
             selected: true,
             wardRole: ranks.rankAbbr === 'AMPS' || ranks.rankAbbr === 'PMO' || ranks.rankAbbr === 'PNO' ? 'incharge' : 'regular',
+            isRotation: Boolean(row.isRotation),
             leaveType,
             leaveNote: leaveType ? `${leaveType} leave` : '',
             cells,

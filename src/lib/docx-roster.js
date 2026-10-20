@@ -123,10 +123,38 @@ function joinLeaveMessage(cells) {
     return '';
 }
 
+/** Banner / totals rows that sit in the name column without a serial number. */
+const NON_STAFF_NAME = /^(ROTATION|LYING\s*INN?|MORNING\s*DUTY|AFTERNOON\s*DUTY|NIGHT\s*DUTY|OFF\s*DUTY|SOD|DAY|RANK|NAME|WEEK|NO|TOTAL)$/i;
+const SHIFTISH_NAME = /^(M|A|N|O|H|SOD|OFC|LV)$/i;
+const RANKISH = /^(AMPS|SMO|MO|SSM|SM|SSN|SN|SNO|RM|RN|EN|MW|PNO|PMO|[A-Z]{2,6})$/i;
+
+/**
+ * Numbered rows (1, 2, …) always count. Unnumbered rows under ROTATION also count
+ * when they have a person name + rank (e.g. Doris Ayensu / RM with blank NO).
+ */
 function isStaffRow(row) {
-    if (!row[0] || !/^\d+$/.test(row[0].text)) return false;
-    const name = row[1]?.text || '';
-    return /[A-Za-z]{2,}/.test(name);
+    const no = (row[0]?.text || '').trim();
+    const name = (row[1]?.text || '').trim();
+    const rank = (row[2]?.text || '').trim();
+    if (!/[A-Za-z]{2,}/.test(name)) return false;
+    if (NON_STAFF_NAME.test(name) || SHIFTISH_NAME.test(name)) return false;
+    if (/DUTY|WEEK|TOTAL|LEAVE/i.test(name) && !/\s/.test(name)) return false;
+    const hasNo = /^\d+$/.test(no);
+    if (hasNo) return true;
+    // Rotation / seconded block: blank NO, name + short rank abbr
+    return Boolean(rank && RANKISH.test(rank) && /[A-Za-z]{2,}/.test(name));
+}
+
+function isRotationBanner(row) {
+    const name = (row[1]?.text || '').trim();
+    const joined = row.map((c) => c.text).join(' ').replace(/\s+/g, ' ').trim();
+    return /^ROTATION$/i.test(name) || /^ROTATION$/i.test(joined);
+}
+
+function isLyingInBanner(row) {
+    const name = (row[1]?.text || '').trim();
+    const joined = row.map((c) => c.text).join(' ').replace(/\s+/g, ' ').trim();
+    return /LYING\s*INN?/i.test(name) || /LYING\s*INN?/i.test(joined);
 }
 
 /**
@@ -180,9 +208,21 @@ export async function parseDocxRoster(buffer) {
 
     const legend = detectLegend(rows);
     const staffRows = [];
+    let inRotation = false;
 
     for (const row of rows) {
+        if (isRotationBanner(row)) {
+            inRotation = true;
+            continue;
+        }
+        if (isLyingInBanner(row)) {
+            inRotation = false;
+            continue;
+        }
         if (!isStaffRow(row)) continue;
+        // Numbered main / lying-in rows leave the rotation block
+        if (/^\d+$/.test((row[0]?.text || '').trim())) inRotation = false;
+
         const dutyCells = row.slice(3);
         const leaveType = joinLeaveMessage(dutyCells) || (STUDY_FILLS.has((row[1]?.fill || '').toUpperCase()) ? 'Study' : '');
         const cells = dutyCells.map((c, idx) => {
@@ -197,11 +237,12 @@ export async function parseDocxRoster(buffer) {
             };
         });
         staffRows.push({
-            no: row[0].text,
+            no: (row[0]?.text || '').trim(),
             name: row[1].text,
             rank: row[2]?.text || '',
             cells,
             leaveType,
+            isRotation: inRotation,
         });
     }
 
