@@ -8,7 +8,7 @@ export const ACCOUNT_TYPES = {
 
 export const TIER_LIMITS = {
     guest: {
-        maxStaff: 20,
+        maxStaff: Infinity,
         maxScheduleDays: 31,
         maxSchedules: 1,
         maxPdfExports: 5,

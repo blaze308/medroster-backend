@@ -126,9 +126,22 @@ export function interpretRosterGrid(parsed) {
             const code = codeLetter(meaning);
             const sod = Boolean(cell.sod) || meaning === 'SOD';
             const unit = unitFromCellText(cell.text);
-            cells.push({ date: cell.date, code, sod, text: cell.text, unit });
-            if (meaning === 'Morning' || meaning === 'Afternoon' || meaning === 'Night' || meaning === 'SOD' || meaning === 'Office') {
-                assignments.push({ date: cell.date, code: codeLetter(meaning === 'SOD' ? 'SOD' : meaning), sod });
+            cells.push({ date: cell.date, code, sod, text: cell.text, unit, meaning: meaning || '' });
+            if (
+                meaning === 'Morning'
+                || meaning === 'Afternoon'
+                || meaning === 'Night'
+                || meaning === 'SOD'
+                || meaning === 'Office'
+                || meaning === 'Off'
+                || meaning === 'Holiday'
+            ) {
+                assignments.push({
+                    date: cell.date,
+                    code: codeLetter(meaning === 'SOD' ? 'SOD' : meaning) || code,
+                    sod,
+                    meaning,
+                });
             }
         }
 

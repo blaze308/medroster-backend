@@ -43,7 +43,8 @@ router.post('/staff/extract', extractLimiter, async (req, res) => {
         const preview = await extractRosterPreview({ buffer: buf, fileName });
         if (!preview.staff?.length) return res.status(400).json({ error: 'No staff rows found in that roster' });
         const maxStaff = TIER_LIMITS.guest.maxStaff;
-        const staff = (preview.staff || []).slice(0, maxStaff);
+        const allStaff = preview.staff || [];
+        const staff = Number.isFinite(maxStaff) ? allStaff.slice(0, maxStaff) : allStaff;
         const requestMs = Date.now() - t0;
         console.log(`[GUEST_API] POST extract OK in ${requestMs}ms staff=${staff.length}`);
         return res.json({
@@ -84,7 +85,7 @@ router.post('/staff/import', (req, res) => {
                 errors.push({ row: idx + 2, reason: mapped.errors.join('; ') });
                 return;
             }
-            if (imported.length >= maxStaff) {
+            if (Number.isFinite(maxStaff) && imported.length >= maxStaff) {
                 errors.push({ row: idx + 2, reason: `Guest limit of ${maxStaff} staff reached` });
                 return;
             }

@@ -412,7 +412,12 @@ export function applyRosterSetup(preview, setup = {}) {
                 outsideMorning,
             };
             cells.push(next);
-            if (ON_DUTY_MEANINGS.includes(next.meaning)) {
+            // Keep Off / Holiday as well so export & calendar can show O vs H (not collapse H→O).
+            if (
+                ON_DUTY_MEANINGS.includes(next.meaning)
+                || next.meaning === 'Off'
+                || next.meaning === 'Holiday'
+            ) {
                 assignments.push({
                     date: cell.date,
                     code: next.code,
