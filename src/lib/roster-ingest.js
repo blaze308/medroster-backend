@@ -151,6 +151,7 @@ function withSetupProposal(preview, extractDebug = null) {
         legendDraft: proposal.legendDraft,
         roleGuesses: proposal.roleGuesses,
         blanks: proposal.blanks,
+        coverTargets: proposal.coverTargets,
         needsFullSetup: proposal.needsFullSetup,
         aiUsed: Boolean(extractDebug?.aiUsed ?? preview?.aiUsed),
         extractDebug: {

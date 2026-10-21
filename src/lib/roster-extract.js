@@ -109,20 +109,26 @@ export function interpretRosterGrid(parsed) {
         const ranks = expandRank(row.rank || split.rank);
         const leaveType = row.leaveType || '';
         const joinedLetters = (row.cells || []).map((c) => c.text).join('').replace(/[^A-Za-z]/g, '').toUpperCase();
-        const fullLeaveRow = Boolean(leaveType) && /MATERNITYLEAVE|STUDYLEAVE/.test(joinedLetters);
+        // Spelled leave across cells (MATERNITY LEAVE) OR any leaveType from the parser → full LV row
+        const fullLeaveRow = Boolean(leaveType)
+            || /MATERNITYLEAVE|STUDYLEAVE|ANNUALLEAVE|SICKLEAVE|PARTLEAVE/.test(joinedLetters);
         const assignments = [];
         const cells = [];
 
         for (const cell of row.cells) {
             if (!cell.date) continue;
-            const meaning = normalizeCellCode(cell.text, parsed.legend);
-            const compact = String(cell.text || '').toUpperCase().replace(/\s+/g, '');
-            const exactDuty = /^(XM|XA|XN|PM|PA|PN|SOD|OFC|OFFICE|D\/O|N\/O|H\/O|OFF)$/i.test(compact)
-                || /^[MANOH]$/i.test(compact);
-            if (fullLeaveRow || (leaveType && !exactDuty && compact !== 'L')) {
-                cells.push({ date: cell.date, code: 'LV', sod: false, text: cell.text, unit: unitFromCellText(cell.text) });
+            if (fullLeaveRow) {
+                cells.push({
+                    date: cell.date,
+                    code: 'LV',
+                    sod: false,
+                    text: cell.text,
+                    unit: unitFromCellText(cell.text),
+                    meaning: 'Leave',
+                });
                 continue;
             }
+            const meaning = normalizeCellCode(cell.text, parsed.legend);
             const code = codeLetter(meaning);
             const sod = Boolean(cell.sod) || meaning === 'SOD';
             const unit = unitFromCellText(cell.text);

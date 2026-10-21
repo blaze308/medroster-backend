@@ -9,11 +9,13 @@ import {
     shiftsOverlap,
 } from '../lib/validation.js';
 import { isRuleHard, normalizeRuleModes } from '../lib/rule-modes.js';
+import { normalizeCoverTargets, DEFAULT_COVER_TARGETS } from '../lib/roster-setup.js';
 import { logAutoGeneration, logError } from '../lib/logger.js';
 
 const router = Router({ mergeParams: true });
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const COVER_SHIFT_NAMES = ['Morning', 'Afternoon', 'Night'];
 
 function dateKey(date) {
     return new Date(date).toISOString().split('T')[0];
@@ -92,9 +94,14 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
         const schedule = { _id: schedSnap.id, ...schedSnap.data() };
 
         let wardGuidelines = {};
+        let coverTargets = DEFAULT_COVER_TARGETS;
         if (schedule.wardId) {
             const wardSnap = await db.doc(`hospitals/${hospitalId}/wards/${schedule.wardId}`).get();
-            if (wardSnap.exists) wardGuidelines = wardSnap.data()?.guidelines || {};
+            if (wardSnap.exists) {
+                const wardData = wardSnap.data() || {};
+                wardGuidelines = wardData.guidelines || {};
+                coverTargets = normalizeCoverTargets(wardData.rosterSetup?.coverTargets);
+            }
         }
 
         const staffSnap = await db.collection(`hospitals/${hospitalId}/staff`)
@@ -190,87 +197,98 @@ router.post('/', requireAuth, requireHospital, requireWriteAccess, async (req, r
             for (const shift of orderedShifts) {
                 if (filledShiftsToday.some((filled) => shiftsOverlap(filled, shift))) continue;
 
+                const isCover = COVER_SHIFT_NAMES.includes(shift.name);
+                // Use local weekend check (same as canWorkShift) so targets match Ghana calendar days
+                const seatsNeeded = isCover
+                    ? (isWeekend(day)
+                        ? (coverTargets[shift.name]?.weekend || 1)
+                        : (coverTargets[shift.name]?.weekday || 1))
+                    : 1;
                 const isNight = shift.name === 'Night';
                 const shiftHours = shiftDurationHours(shift);
+                let seatsFilled = 0;
 
-                const pool = allStaff.filter((s) => {
-                    const sid = s._id;
-                    if (assignedToday.has(sid)) return false;
-                    if (!canWorkShift(s, day, shift, holidays)) return false;
-                    if (hardenDays && (consecutiveTracker.get(sid) || 0) >= maxConsecutive) return false;
-                    if (hardenOffDays && (assignmentCounts.get(sid) || 0) >= (maxWorkDaysByStaff.get(sid) ?? days.length)) {
-                        return false;
-                    }
-                    if (hardenNights && isNight && (consecutiveNightTracker.get(sid) || 0) >= maxNights) return false;
-                    if (hardenHours) {
-                        const weekHours = hoursForStaffInWeekContaining({
-                            assignments: created,
-                            staffId: sid,
-                            date: day,
-                            scheduleStart,
-                        });
-                        if (weekHours + shiftHours > maxHoursPerWeek) return false;
-                    }
-                    return true;
-                });
+                for (let seat = 0; seat < seatsNeeded; seat++) {
+                    const pool = allStaff.filter((s) => {
+                        const sid = s._id;
+                        if (assignedToday.has(sid)) return false;
+                        if (!canWorkShift(s, day, shift, holidays)) return false;
+                        if (hardenDays && (consecutiveTracker.get(sid) || 0) >= maxConsecutive) return false;
+                        if (hardenOffDays && (assignmentCounts.get(sid) || 0) >= (maxWorkDaysByStaff.get(sid) ?? days.length)) {
+                            return false;
+                        }
+                        if (hardenNights && isNight && (consecutiveNightTracker.get(sid) || 0) >= maxNights) return false;
+                        if (hardenHours) {
+                            const weekHours = hoursForStaffInWeekContaining({
+                                assignments: created,
+                                staffId: sid,
+                                date: day,
+                                scheduleStart,
+                            });
+                            if (weekHours + shiftHours > maxHoursPerWeek) return false;
+                        }
+                        return true;
+                    });
 
-                if (pool.length === 0) continue;
+                    if (pool.length === 0) break;
 
-                pool.sort((a, b) => {
-                    const roleA = a.wardRole === 'incharge' || a.wardRole === 'assistant' ? -1 : 0;
-                    const roleB = b.wardRole === 'incharge' || b.wardRole === 'assistant' ? -1 : 0;
-                    // Soft prefer: fewer consecutive / hours when not hardened
-                    const softConsec =
-                        !hardenDays
-                            ? (consecutiveTracker.get(a._id) || 0) - (consecutiveTracker.get(b._id) || 0)
-                            : 0;
-                    return (
-                        roleA - roleB ||
-                        softConsec ||
-                        preferenceScore(a, day, shift, usePreferences) - preferenceScore(b, day, shift, usePreferences) ||
-                        (assignmentCounts.get(a._id) || 0) - (assignmentCounts.get(b._id) || 0)
-                    );
-                });
+                    pool.sort((a, b) => {
+                        const roleA = a.wardRole === 'incharge' || a.wardRole === 'assistant' ? -1 : 0;
+                        const roleB = b.wardRole === 'incharge' || b.wardRole === 'assistant' ? -1 : 0;
+                        const softConsec =
+                            !hardenDays
+                                ? (consecutiveTracker.get(a._id) || 0) - (consecutiveTracker.get(b._id) || 0)
+                                : 0;
+                        return (
+                            roleA - roleB ||
+                            softConsec ||
+                            preferenceScore(a, day, shift, usePreferences) - preferenceScore(b, day, shift, usePreferences) ||
+                            (assignmentCounts.get(a._id) || 0) - (assignmentCounts.get(b._id) || 0)
+                        );
+                    });
 
-                let pick = pool[0];
-                // Prefer a senior/in-charge on each coverage shift when available; never fail if none.
-                if (needsSeniorCoverage(shift.name) && minSenior > 0) {
-                    const have = seniorsByShift.get(shift.name)?.size || 0;
-                    if (have < minSenior) {
-                        const seniorPick = pool.find((s) => seniorIds.has(s._id));
-                        if (seniorPick) pick = seniorPick;
-                        else if (hardenSenior) {
-                            // No eligible senior in pool — still assign (shortage); validation will error.
+                    let pick = pool[0];
+                    // Prefer a senior/in-charge for the first seat(s) on each cover shift
+                    if (needsSeniorCoverage(shift.name) && minSenior > 0) {
+                        const have = seniorsByShift.get(shift.name)?.size || 0;
+                        if (have < minSenior) {
+                            const seniorPick = pool.find((s) => seniorIds.has(s._id));
+                            if (seniorPick) pick = seniorPick;
+                            else if (hardenSenior) {
+                                // No eligible senior in pool — still assign (shortage); validation will error.
+                            }
                         }
                     }
+
+                    const sid = pick._id;
+                    created.push({
+                        scheduleId: schedId,
+                        hospitalId,
+                        staffId: sid,
+                        departmentId: pick.departmentId,
+                        wardId: schedule.wardId,
+                        date: day.toISOString(),
+                        shiftType: { name: shift.name, color: shift.color, startTime: shift.startTime, endTime: shift.endTime },
+                        createdAt: new Date().toISOString(),
+                    });
+
+                    assignmentCounts.set(sid, (assignmentCounts.get(sid) || 0) + 1);
+                    consecutiveTracker.set(sid, (consecutiveTracker.get(sid) || 0) + 1);
+                    if (isNight) {
+                        consecutiveNightTracker.set(sid, (consecutiveNightTracker.get(sid) || 0) + 1);
+                    } else {
+                        consecutiveNightTracker.set(sid, 0);
+                    }
+                    lastWorkedDate.set(sid, day);
+                    assignedToday.add(sid);
+                    seatsFilled += 1;
+                    if (seniorIds.has(sid) && needsSeniorCoverage(shift.name)) {
+                        if (!seniorsByShift.has(shift.name)) seniorsByShift.set(shift.name, new Set());
+                        seniorsByShift.get(shift.name).add(sid);
+                    }
                 }
 
-                const sid = pick._id;
-                created.push({
-                    scheduleId: schedId,
-                    hospitalId,
-                    staffId: sid,
-                    departmentId: pick.departmentId,
-                    wardId: schedule.wardId,
-                    date: day.toISOString(),
-                    shiftType: { name: shift.name, color: shift.color, startTime: shift.startTime, endTime: shift.endTime },
-                    createdAt: new Date().toISOString(),
-                });
-
-                assignmentCounts.set(sid, (assignmentCounts.get(sid) || 0) + 1);
-                consecutiveTracker.set(sid, (consecutiveTracker.get(sid) || 0) + 1);
-                if (isNight) {
-                    consecutiveNightTracker.set(sid, (consecutiveNightTracker.get(sid) || 0) + 1);
-                } else {
-                    consecutiveNightTracker.set(sid, 0);
-                }
-                lastWorkedDate.set(sid, day);
-                assignedToday.add(sid);
-                filledShiftsToday.push(shift);
-                if (seniorIds.has(sid) && needsSeniorCoverage(shift.name)) {
-                    if (!seniorsByShift.has(shift.name)) seniorsByShift.set(shift.name, new Set());
-                    seniorsByShift.get(shift.name).add(sid);
-                }
+                if (seatsFilled > 0) filledShiftsToday.push(shift);
             }
         }
 

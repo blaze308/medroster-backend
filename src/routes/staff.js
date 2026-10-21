@@ -315,7 +315,7 @@ async function upsertSlimStaff({ hospitalId, departmentId, wardId, row, now }) {
         category: row.category || categoryFromRank(rank) || 'Nurse',
         staffType: classifyStaffType(rank),
         annualLeaveBalance: Number(row.annualLeaveDays ?? row.annualLeaveBalance) || 15,
-        employmentStatus: row.leaveType && /maternity|study/i.test(row.leaveType) ? 'On Leave' : 'Active',
+        employmentStatus: row.leaveType ? 'On Leave' : 'Active',
         wardRole: row.wardRole || 'regular',
         workRestriction: /study/i.test(row.leaveType || '') ? 'studyLeave' : (row.workRestriction || 'none'),
         noNightShift: Boolean(row.noNightShift),
@@ -327,7 +327,11 @@ async function upsertSlimStaff({ hospitalId, departmentId, wardId, row, now }) {
         updatedAt: now,
     };
     if (row.existingId) {
-        await db.doc(`hospitals/${hospitalId}/staff/${row.existingId}`).update(payload);
+        const update = { ...payload };
+        if (Array.isArray(row.leaveRecords) && row.leaveRecords.length) {
+            update.leaveRecords = row.leaveRecords;
+        }
+        await db.doc(`hospitals/${hospitalId}/staff/${row.existingId}`).update(update);
         return row.existingId;
     }
     const ref = db.collection(`hospitals/${hospitalId}/staff`).doc();

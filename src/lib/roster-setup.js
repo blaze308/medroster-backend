@@ -18,6 +18,129 @@ export const LEGEND_MEANINGS = LEGEND_MEANING_OPTIONS.map((o) => o.value);
 export const COVER_SHIFTS = ['Morning', 'Afternoon', 'Night'];
 export const ON_DUTY_MEANINGS = ['Morning', 'Afternoon', 'Night', 'SOD', 'Office'];
 
+/** Delivery-Suite-like defaults when import has no usable density. */
+export const DEFAULT_COVER_TARGETS = {
+    Morning: { weekday: 15, weekend: 8 },
+    Afternoon: { weekday: 10, weekend: 6 },
+    Night: { weekday: 8, weekend: 7 },
+};
+
+const COVER_CODE_TO_SHIFT = {
+    M: 'Morning',
+    A: 'Afternoon',
+    N: 'Night',
+    XM: 'Morning',
+    XA: 'Afternoon',
+    XN: 'Night',
+    PM: 'Morning',
+    PA: 'Afternoon',
+    PN: 'Night',
+};
+
+function medianInt(values) {
+    if (!values?.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 0) {
+        return Math.max(1, Math.round((sorted[mid - 1] + sorted[mid]) / 2));
+    }
+    return Math.max(1, sorted[mid]);
+}
+
+function isWeekendDate(dateStr) {
+    if (!dateStr) return false;
+    const d = new Date(`${String(dateStr).slice(0, 10)}T00:00:00.000Z`);
+    if (Number.isNaN(d.getTime())) return false;
+    const day = d.getUTCDay();
+    return day === 0 || day === 6;
+}
+
+function cellCoverShift(cell) {
+    const meaning = String(cell?.meaning || '').trim();
+    if (COVER_SHIFTS.includes(meaning)) return meaning;
+    if (meaning === 'SOD') return 'Morning';
+    const code = String(cell?.code || cell?.text || '').trim().toUpperCase().replace(/\s+/g, '');
+    return COVER_CODE_TO_SHIFT[code] || '';
+}
+
+/**
+ * Learn weekday/weekend headcount targets from an imported roster grid.
+ * Skips full-leave rows. Falls back to DEFAULT_COVER_TARGETS when sparse.
+ */
+export function deriveCoverTargets(preview, savedTargets = null) {
+    const byShift = {
+        Morning: { weekday: [], weekend: [] },
+        Afternoon: { weekday: [], weekend: [] },
+        Night: { weekday: [], weekend: [] },
+    };
+
+    const staff = (preview?.staff || []).filter((s) => {
+        if (s.leaveType) return false;
+        const codes = (s.cells || []).map((c) => String(c.code || c.text || '').toUpperCase());
+        if (codes.length && codes.every((c) => c === 'LV' || c === 'L' || c === 'LEAVE')) return false;
+        return true;
+    });
+
+    const dates = new Set();
+    for (const s of staff) {
+        for (const c of s.cells || []) {
+            if (c?.date) dates.add(String(c.date).slice(0, 10));
+        }
+    }
+
+    for (const date of dates) {
+        const counts = { Morning: 0, Afternoon: 0, Night: 0 };
+        for (const s of staff) {
+            for (const c of s.cells || []) {
+                if (String(c?.date || '').slice(0, 10) !== date) continue;
+                const shift = cellCoverShift(c);
+                if (shift) counts[shift] += 1;
+            }
+        }
+        const bucket = isWeekendDate(date) ? 'weekend' : 'weekday';
+        for (const shift of COVER_SHIFTS) {
+            if (counts[shift] > 0) byShift[shift][bucket].push(counts[shift]);
+        }
+    }
+
+    const out = {};
+    let learned = false;
+    for (const shift of COVER_SHIFTS) {
+        const wd = medianInt(byShift[shift].weekday);
+        const we = medianInt(byShift[shift].weekend);
+        if (wd != null || we != null) learned = true;
+        out[shift] = {
+            weekday: wd ?? savedTargets?.[shift]?.weekday ?? DEFAULT_COVER_TARGETS[shift].weekday,
+            weekend: we ?? savedTargets?.[shift]?.weekend ?? DEFAULT_COVER_TARGETS[shift].weekend,
+        };
+    }
+    if (!learned && savedTargets) {
+        return normalizeCoverTargets(savedTargets);
+    }
+    return out;
+}
+
+export function normalizeCoverTargets(raw) {
+    const out = {};
+    for (const shift of COVER_SHIFTS) {
+        const src = raw?.[shift] || {};
+        const def = DEFAULT_COVER_TARGETS[shift];
+        out[shift] = {
+            weekday: Math.max(1, Number(src.weekday) || def.weekday),
+            weekend: Math.max(1, Number(src.weekend) || def.weekend),
+        };
+    }
+    return out;
+}
+
+/** Headcount target for one cover shift on a given date. */
+export function coverTargetForDate(coverTargets, shiftName, dateStr) {
+    const targets = normalizeCoverTargets(coverTargets);
+    const entry = targets[shiftName];
+    if (!entry) return 1;
+    return isWeekendDate(dateStr) ? entry.weekend : entry.weekday;
+}
+
 /** Clinic / office operating weekdays (Mon–Fri default, like antenatal / polyclinic). */
 export const OFFICE_DAY_OPTIONS = [
     { value: 'Mon', label: 'Mon' },
@@ -341,11 +464,14 @@ export function buildSetupProposal(preview, savedSetup = null) {
         });
     }
 
+    const coverTargets = deriveCoverTargets(preview, savedSetup?.coverTargets || null);
+
     return {
         codes,
         legendDraft,
         roleGuesses,
         blanks,
+        coverTargets,
         savedSetup: savedSetup || null,
         // Re-ask only when pack missing or new unknown codes (in-charge tip is soft, not a monthly block)
         needsFullSetup: !savedSetup?.confirmedAt || unknownCodes.length > 0,
@@ -378,6 +504,21 @@ export function applyRosterSetup(preview, setup = {}) {
         const cells = [];
         const assignments = [];
         for (const cell of s.cells || []) {
+            // Full-cycle leave: overwrite every cell (including M/A/N from "MATERNITY LEAVE" spelling)
+            if (onLeave) {
+                cells.push({
+                    date: cell.date,
+                    text: cell.text || 'LV',
+                    code: 'LV',
+                    sod: false,
+                    unit: cell.unit || '',
+                    meaning: 'Leave',
+                    dutyOverlaps: [],
+                    officeDays: [],
+                    outsideMorning: false,
+                });
+                continue;
+            }
             const label = normalizeLabel(cell.text || cell.code);
             const entry = byLabel.get(label);
             const meaning = entry?.meaning || KNOWN_LABEL_MEANING[label] || '';
@@ -393,10 +534,7 @@ export function applyRosterSetup(preview, setup = {}) {
             const sourceLabel = label || normalizeLabel(cell.code) || '';
             let resolvedMeaning = meaning;
             let code = sourceLabel || codeLetter(meaning) || String(cell.code || '').trim();
-            if (onLeave && (!meaning || meaning === 'Leave')) {
-                resolvedMeaning = 'Leave';
-                code = sourceLabel || 'LV';
-            } else if (!code && meaning) {
+            if (!code && meaning) {
                 code = codeLetter(meaning);
             }
             const sod = resolvedMeaning === 'SOD' || Boolean(cell.sod);
@@ -412,7 +550,7 @@ export function applyRosterSetup(preview, setup = {}) {
                 outsideMorning,
             };
             cells.push(next);
-            // Keep Off / Holiday as well so export & calendar can show O vs H (not collapse H→O).
+            // Keep Off / Holiday as well so export/calendar can show O vs H (not collapse H→O).
             if (
                 ON_DUTY_MEANINGS.includes(next.meaning)
                 || next.meaning === 'Off'
@@ -490,6 +628,7 @@ export function buildRosterSetupPayload(setup) {
         assistantStaffKey: setup.assistantStaffKey || '',
         units: setup.units || {},
         leaveByKey: setup.leaveByKey || {},
+        coverTargets: normalizeCoverTargets(setup.coverTargets),
         confirmedAt: new Date().toISOString(),
     };
 }
