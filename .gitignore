@@ -8,4 +8,6 @@ Thumbs.db
 .idea/
 .vscode/
 .vercel
+scripts/migrate-firestore.mjs
+scripts/import-auth-users.mjs
 .env*

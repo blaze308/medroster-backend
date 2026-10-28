@@ -4,7 +4,7 @@
 
 Standalone Express API for MedRoster. Authenticates requests with **Firebase Auth** ID tokens and stores hospital data in **Cloud Firestore**.
 
-Consumed by the [web frontend](https://github.com/blaze308/medroster-frontend) and [Flutter app](https://github.com/blaze308/medroster-app).
+Consumed by the [web frontend](https://github.com/blaze308/medroster-web-app) and [Flutter app](https://github.com/blaze308/medroster-mobile-app).
 
 ---
 
@@ -135,8 +135,8 @@ src/
 
 | Repo | Role |
 |------|------|
-| [medroster-frontend](https://github.com/blaze308/medroster-frontend) | Next.js web client |
-| [medroster-app](https://github.com/blaze308/medroster-app) | Flutter mobile client |
+| [medroster-web-app](https://github.com/blaze308/medroster-web-app) | Next.js web client |
+| [medroster-mobile-app](https://github.com/blaze308/medroster-mobile-app) | Flutter mobile client |
 
 ---
 
